@@ -1,3 +1,5 @@
+cmake_minimum_required(VERSION 3.10)
+
 project(mc2res)
 
 set(RES_SOURCES libmain.cpp libmainc.cpp)
