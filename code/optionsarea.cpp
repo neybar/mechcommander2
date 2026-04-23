@@ -1141,6 +1141,7 @@ void OptionsHotKeys::update()
 						LogisticsOKDialog::instance()->setText( IDS_OPTIONS_HOTKEY_ERROR, IDS_DIALOG_NO, IDS_DIALOG_YES  );
 						LogisticsOKDialog::instance()->begin();
 						bShowDlg = true;
+						tmpKey = 0;
 					}
 
 				}
