@@ -63,11 +63,12 @@ cd build64
 cmake.exe -G "Visual Studio 17 2022" -DCMAKE_PREFIX_PATH=c:/path_to_3rdparty_folder/ -DCMAKE_LIBRARY_ARCHITECTURE=x64 ..
 ```
 (use absolute path to 3rdparty folder)
+
 Copy mc2.exe to your executable folder of preference (say mc2exe)
 ```
 cd res
 md build64
-cd build 64
+cd build64
 cmake.exe -G "Visual Studio 17 2022" -DCMAKE_LIBRARY_ARCHITECTURE=x64 ..
 ```
 Copy mc2res.dll/pdb to your executable folder of preference (say mc2exe)
@@ -108,4 +109,3 @@ Copy all required dlls to your exe folder of preference
 Run the game!
 
 .. and, hopefully, enjoy
-
