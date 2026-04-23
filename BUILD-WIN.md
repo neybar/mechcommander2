@@ -83,14 +83,16 @@ cd mc2srcdata
 1. Read `README.md` in `build_scripts` folder
 
 If you did not here are the steps:
-1. copy tools from the exe solution to build_scripts folder 
-(better copy Release version of these to make things faster)
-    aseconv
-    makefst
-    makersp
-    pak
-    text_tool
-1a. Copy glew32.dll there as well (x86 or x64 depending on what version of tools you've built)
+1. copy the following tools from the exe solution to `build_scripts` folder 
+(better copy Release version of these to make things faster):
+    `aseconv`
+    `makefst`
+    `makersp`
+    `pak`
+    `text_tool`
+    
+    1a. Copy glew32.dll there as well (x86 or x64 depending on what version of tools you've built)
+
 2. launch some console which has `make` in its path (needs GNUMake)
 (you can install it from here: https://gnuwin32.sourceforge.net/packages/make.htm)
 3. `cd build_scripts`
