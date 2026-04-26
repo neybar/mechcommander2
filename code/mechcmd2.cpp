@@ -835,7 +835,7 @@ void __stdcall InitializeGameEngine()
 		gosResourceHandle = gos_OpenResourceDLL("mc2res_32.dll", NULL, 0);
 	#endif
 #else
-	gosResourceHandle = gos_OpenResourceDLL("./libmc2res.so", NULL, 0);
+	gosResourceHandle = gos_OpenResourceDLL(sizeof(void*)==8 ? "./libmc2res_64.so" : "./libmc2res_32.so", NULL, 0);
 #endif
 
 	if(!gosResourceHandle) {
