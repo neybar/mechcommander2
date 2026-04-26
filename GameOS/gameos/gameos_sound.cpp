@@ -351,7 +351,7 @@ void __stdcall gosAudio_CreateResource( HGOSAUDIO* hgosaudio, enum gosAudio_Reso
         }
 
 		// for some reason len_cvt may be less than required :-/
-        gosASSERT(cvt.len_cvt <= (int)audio_data_size);
+        gosASSERT(cvt.len_cvt >= (int)audio_data_size);
 		if(cvt.len_cvt < (int)audio_data_size)
             SPEW(("AUDIO", "cvt.len_cvt != audio_data_len %d != %d\n", cvt.len_cvt, audio_data_size));
 		if (cvt.len_cvt < (int)audio_data_size)
