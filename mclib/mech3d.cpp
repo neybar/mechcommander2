@@ -4218,8 +4218,8 @@ long Mech3DAppearance::update (bool animate)
 		
 		qRotation = Stuff::EulerAngles(dRot[1].x * DEGREES_TO_RADS, dRot[1].y * DEGREES_TO_RADS, dRot[1].z * DEGREES_TO_RADS);
 
-        // sebi: update texture handle, it will not be updated it updateGeometry 
-        // is not caaled which is not correct and leads to 
+        // sebi: update texture handle, it will not be updated if updateGeometry 
+        // is not called which is not correct and leads to 
         // "Flags do not match either set of vertex Data" (see txmmgr.h)
 		leftArm->SetTextureHandle(0,localTextureHandle);
 
@@ -4302,8 +4302,8 @@ long Mech3DAppearance::update (bool animate)
 		
 		qRotation = Stuff::EulerAngles(dRot[0].x * DEGREES_TO_RADS, dRot[0].y * DEGREES_TO_RADS, dRot[0].z * DEGREES_TO_RADS);
 
-        // sebi: update texture handle, it will not be updated it updateGeometry 
-        // is not caaled which is not correct and leads to 
+        // sebi: update texture handle, it will not be updated if updateGeometry 
+        // is not called which is not correct and leads to 
         // "Flags do not match either set of vertex Data" (see txmmgr.h)
 		rightArm->SetTextureHandle(0,localTextureHandle);
 
