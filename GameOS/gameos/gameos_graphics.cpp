@@ -1346,7 +1346,9 @@ void gosRenderer::init() {
             materialList_.push_back(pmat);
             materialDB_[ shader_list[sh_idx] ].insert(std::make_pair(combinations[i], pmat));
 
-            *shader_ptr_list[sh_idx] = pmat;
+            if(i == 0) { // only assign materials once, using versions without any extra defines
+                *shader_ptr_list[sh_idx] = pmat;
+            }
         }
     }
 
