@@ -695,10 +695,57 @@ void __stdcall TerminateGameEngine()
 	
 }
 
+void ParseCommandLine(const char *command_line)
+{
+	int i;
+	int n_args = 0;
+	int index = 0;
+	char *argv[30];
+	
+	char tempCommandLine[4096];
+	memset(tempCommandLine,0,4096);
+	strncpy(tempCommandLine,command_line,4095);
+
+	while (tempCommandLine[index] != '\0')  // until we null out
+	{
+		argv[n_args] = tempCommandLine + index;
+		n_args++;
+		while (tempCommandLine[index] != ' ' && tempCommandLine[index] != '\0')
+		{
+			index++;
+		}
+		while (tempCommandLine[index] == ' ')
+		{
+			tempCommandLine[index] = '\0';
+			index++;
+		}
+	}
+
+	i=0;
+	while (i<n_args)
+	{
+		if (S_stricmp(argv[i], "-datapath") == 0) {
+			i++;
+            if (i < n_args) {
+                strncpy(CDInstallPath, argv[i], MAX_PATH);
+                CDInstallPath[MAX_PATH-1] = '\0';
+            } else {
+                SPEW(("[CMDLINE]", "-datapath requires path value"));
+            }
+		}
+
+		i++;
+	}
+}
+
+
+
 
 //---------------------------------------------------------------------
 void __stdcall GetGameOSEnvironment( const char* CommandLine )
 {
+    ParseCommandLine(CommandLine);
+
 	Environment.applicationName			= "MechCommander 2 Encyclopedia";
 
 	Environment.debugLog				= "";			//"DebugLog.txt";

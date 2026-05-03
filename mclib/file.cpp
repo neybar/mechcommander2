@@ -63,7 +63,7 @@ unsigned long File::lastError = NO_ERR;
 bool		  File::logFileTraffic = FALSE;
 
 FilePtr fileTrafficLog = NULL;
-char CDInstallPath[1024];
+char CDInstallPath[1024] = {0};
 void EnterWindowMode();
 void EnterFullScreenMode();
 void __stdcall ExitGameOS();
@@ -281,8 +281,12 @@ long File::open (const char* fName, FileMode _mode, long numChild, bool doNotLow
 						strcat(testCDPath,"tgl.fst");
 
 						DWORD findCD = fileExists(testCDPath);
-						if (findCD == 1)	//File exists. CD is in drive.  Return 2 to indicate file not found.
+						if (findCD == 1) { //File exists. CD is in drive.  Return 2 to indicate file not found.
 							return 2;
+                        } else {
+                            SPEW(("[FILE]", "Test file: %s is not found at CD Install Path (%s), assming no CD present", 
+                                testCDPath, CDInstallPath));
+                        }
 
 						EnterWindowMode();
 		

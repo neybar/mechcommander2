@@ -975,12 +975,9 @@ void __stdcall InitializeGameEngine()
 		//if (!maxPathLength)
 		//	strcpy(CDInstallPath,"..\\");
 		// to find necessary files
-#ifdef PLATFORM_WINDOWS
-		// for my windows layout
-		strcpy(CDInstallPath,"./");
-#else
-		strcpy(CDInstallPath,"../FinalBuild/");
-#endif        
+        if(strlen(CDInstallPath) == 0) {
+            strcpy(CDInstallPath,"./");
+        }
 
 		//--------------------------------------------------------------
 		// Start the SystemHeap and globalHeapList
@@ -2626,6 +2623,10 @@ void ParseCommandLine(const char *command_line)
 				for (long j = 0; j < numPlayers; j++)
 					MultiPlayer::presetDropZones[j] = (argv[i][j] - '0');
 			}
+        }
+		else if (S_stricmp(argv[i], "-datapath") == 0) {
+            strncpy(CDInstallPath, argv[i], MAX_PATH);
+            CDInstallPath[MAX_PATH-1] = '\0';
 		}
 
 		i++;
