@@ -2685,7 +2685,6 @@ void ControlGui::swapResolutions( int resolutionX, int resolutionY )
 
 	if ( resolutionX == 1920) {
         y_correction = resolutionY - (768 + hiResOffsetY);
-        x_correction = (resolutionX - (1600 + hiResOffsetX)) / 2; //sebi: need to correct X as well, because buttonlayout1920 is actually same as 1600, do we ned then separate file for 1920?
     } else if ( resolutionX == 1600) {
         y_correction = resolutionY - (768 + hiResOffsetY);
     } else if ( resolutionX == 1280) {
@@ -2698,7 +2697,6 @@ void ControlGui::swapResolutions( int resolutionX, int resolutionY )
         y_correction = resolutionY - (480 + hiResOffsetY);
     } else {
         y_correction = resolutionY - (768 + hiResOffsetY);
-        x_correction = (resolutionX - (1600 + hiResOffsetX)) / 2;
     }
 	
     // add corrections
