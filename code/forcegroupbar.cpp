@@ -441,7 +441,8 @@ bool ForceGroupBar::setPilotVideo( const char* pVideo, MechWarrior* pPilot )
 			{
 				ForceGroupIcon::pilotVideoPilot = pPilot;
 				FullPathFileName aviPath;
-				aviPath.init( moviePath, pVideo, ".bik" );
+				//aviPath.init( moviePath, pVideo, ".bik" );
+				aviPath.init( moviePath, pVideo, ".mpg" ); //sebi: because we check below if file exists and we convert files to .mpg
 
 				if ( (frameRate > 15.0) && fileExists(aviPath) && prefs.pilotVideos) // This is about correct.  Slower then this and movie has hard time keeping up!
 				{

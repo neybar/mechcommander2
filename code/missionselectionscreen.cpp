@@ -231,7 +231,8 @@ void MissionSelectionScreen::begin()
 	if ( str && strlen( str ) )
 	{
 		FullPathFileName videoName;
-		videoName.init( moviePath, str, ".bik" );
+		//videoName.init( moviePath, str, ".bik" );
+		videoName.init( moviePath, str, ".mpg" ); //sebi: because we check below if file exists and we convert files to .mpg
 
 		if (fileExists(videoName) || fileExistsOnCD(videoName))
 		{
