@@ -324,7 +324,6 @@ int main(int argc, char** argv)
     while( !g_exit ) {
 
 		uint64_t start_tick = timing::gettickcount();
-		timing::sleep(10*1000000);
 
         if(gos_RenderGetEnableDebugDrawCalls()) {
             gos_RenderUpdateDebugInput();
