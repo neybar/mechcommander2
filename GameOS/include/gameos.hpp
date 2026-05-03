@@ -181,6 +181,7 @@ typedef struct _GUID
 //
 //typedef struct	SoundResource*	HGOSAUDIO;
 typedef class gosAudio*	    HGOSAUDIO; // sebi
+typedef class gosStreamedAudio*	    HGOSSTREAMEDAUDIO; // sebi
 typedef struct	gos_Music*		HGOSMUSIC;
 typedef struct	gos_Video*		HGOSVIDEO;
 typedef struct	gosFileStream*	HGOSFILE;
@@ -661,6 +662,10 @@ typedef struct _gosAudio_ChannelInfo
 //
 void __stdcall gosAudio_CreateResource( HGOSAUDIO* hgosaudio, enum gosAudio_ResourceType,  const char* file_name, gosAudio_Format* ga_wf = 0, void* data = 0, int size = 0, bool only2D = 0);
 void __stdcall gosAudio_CreateResource( HGOSAUDIO * hgosaudio, const char * identifier_name, HGOSFILE file, DWORD offset, bool only2D = 0);
+
+__stdcall HGOSSTREAMEDAUDIO gosAudio_CreateStreamedResource(const gosAudio_Format* ga_wf);
+void __stdcall gosAudio_DestroyStreamedResource( HGOSSTREAMEDAUDIO* hgosaudio );
+void __stdcall gosAudio_EnqueueSamples(HGOSSTREAMEDAUDIO hgosaudio, void* buf, int bytes);
 
 //////////////////////////////////////////////////////////////////////////////////
 // Destroy a resource; any sounds currently playing using the ResourceID will be
@@ -2723,6 +2728,7 @@ enum gos_TextureFormat
 	gos_Texture_Alpha=2,		// 4444 or failing that 8888 (maximum alpha with at least 12 bits of RGB - ie: not 8332)
 	gos_Texture_Bump=3,			// dUdV bump map (create from monochrome image)
 	gos_Texture_Normal=4,		// texture map of normals (create from monochrome image)
+    gos_Texture_Luminance=5     // sebi: 8bit single channel
 };
 
 //
@@ -2842,6 +2848,8 @@ void __stdcall gos_LockTexture( DWORD Handle, DWORD MipMapSize, bool ReadOnly, T
 // Unlocks and updates a texture (may have to build and upload mipmaps)
 //
 void __stdcall gos_UnLockTexture( DWORD Handle );
+
+void __stdcall gos_UpdateTexture( DWORD Handle, unsigned char* data, DWORD size);
 
 //
 // Converts from 32bpp source to subrect of n-bpp dest, bypassing intermediate 32bpp buffer

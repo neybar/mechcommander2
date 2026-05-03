@@ -25,6 +25,7 @@ extern bool gos_RenderGetEnableDebugDrawCalls();
 extern bool gosExitGameOS();
 
 extern bool gos_CreateAudio();
+extern void gos_UpdateAudio();
 extern void gos_DestroyAudio();
 
 static bool g_exit = false;
@@ -334,6 +335,7 @@ int main(int argc, char** argv)
         process_events();
 
 		gos_RendererHandleEvents();
+        gos_UpdateAudio();
 
         graphics::make_current_context(ctx);
         draw_screen();

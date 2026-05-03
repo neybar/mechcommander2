@@ -51,6 +51,13 @@ class MC2Movie
 
 			waveName = NULL;
 			m_MC2Name = NULL;
+
+            texY = texCB = texCR = 0;
+            quad_ib_ = 0;
+            quad_vb_ = 0;
+            vdecl_ = 0;
+            audio_res_ = 0;
+            b_decode_audio_from_movie_ = false;
 		}
 
 		~MC2Movie (void)
@@ -72,6 +79,8 @@ class MC2Movie
 				delete [] m_MC2Name;
 				m_MC2Name = NULL;
 			}
+
+            destroy_stuff(pimpl);
 		}
 
 		//Movie name assumes path is correct.
@@ -92,21 +101,10 @@ class MC2Movie
 		}
 
 		//Pause video playback.
-		void pause (bool pauseState)
-		{
-			if (stillPlaying)
-			{
-			}
-
-			forceStop = false;
-		}
+		void pause (bool pauseState);
 
 		//Restarts MC2 from beginning.  Can be called anytime.
-		void restart (void)
-		{
-			stillPlaying = true;
-			forceStop = false;
-		}
+		void restart (void);
 
 		//Changes rect.  If resize, calls malloc which will be QUITE painful during a MC2 playback
 		// If just move, its awfully fast.
@@ -122,7 +120,19 @@ class MC2Movie
 			return m_MC2Name;
 		}
 		
-	protected:
+        DWORD texY, texCB, texCR;
+        vec2 sizeY, sizeCB, sizeCR;        struct MoviePlayerImpl* pimpl;
+        void destroy_stuff(struct MoviePlayerImpl* pimpl);
+        HGOSBUFFER quad_vb_;
+        HGOSBUFFER quad_ib_;
+        HGOSVERTEXDECLARATION vdecl_;
+        double cur_movie_time_;
+        vec4 texture_crop_size_;
+
+        HGOSSTREAMEDAUDIO audio_res_;
+        bool b_decode_audio_from_movie_;
+
+        bool bPaused;
 	
 		DWORD*		MC2Surface;									//Extra surface used if MC2 Movie is larger then 256x256
 		DWORD		mc2TextureNodeIndex[MAX_TEXTURES_NEEDED];		//Handles to textures for MC2 movie data.

@@ -25,6 +25,15 @@
 #include "../resource.h"
 #include"gameos.hpp"
 
+#define PL_MPEG_IMPLEMENTATION
+#include "pl_mpeg/pl_mpeg.h"
+
+#include <SDL2/SDL.h>
+
+struct MoviePlayerImpl {
+	plm_t *plm;
+};
+
 //-----------------------------------------------------------------------
 const DWORD MAX_TEXTURE_WIDTH 	= 256;
 const DWORD MAX_TEXTURE_HEIGHT 	= 256;
@@ -50,6 +59,57 @@ void EnterFullScreenMode();
 void __stdcall ExitGameOS();
 
 //-----------------------------------------------------------------------
+
+void app_on_video(plm_t *mpeg, plm_frame_t *frame, void *user) {
+    MC2Movie *self = (MC2Movie*)user;
+
+    // Hand the decoded data over to OpenGL. For the RGB texture mode, the
+    // YCrCb->RGB conversion is done on the CPU.
+
+    if(self->sizeY != vec2(frame->y.width, frame->y.height)) {
+        gos_DestroyTexture(self->texY);
+        DWORD wh = (frame->y.height << 16) | frame->y.width;
+        self->sizeY = vec2(frame->y.width, frame->y.height);
+        self->texY = gos_NewEmptyTexture(gos_Texture_Luminance,"MovieY", wh, gosHint_DisableMipmap);
+    } else {
+        gos_UpdateTexture(self->texY, frame->y.data, frame->y.width*frame->y.height);
+    }
+
+    if(self->sizeCB != vec2(frame->cb.width, frame->cb.height)) {
+        gos_DestroyTexture(self->texCB);
+        DWORD wh = (frame->cb.height << 16) | frame->cb.width;
+        self->sizeCB = vec2(frame->cb.width, frame->cb.height);
+        self->texCB = gos_NewEmptyTexture(gos_Texture_Luminance,"MovieCB", wh, gosHint_DisableMipmap);
+    } else {
+        gos_UpdateTexture(self->texCB, frame->cb.data, frame->cb.width*frame->cb.height);
+    }
+
+    if(self->sizeCR != vec2(frame->cr.width, frame->cr.height)) {
+        gos_DestroyTexture(self->texCR);
+        DWORD wh = (frame->cr.height << 16) | frame->cr.width;
+        self->sizeCR = vec2(frame->cr.width, frame->cr.height);
+        self->texCR = gos_NewEmptyTexture(gos_Texture_Luminance,"MovieCR", wh, gosHint_DisableMipmap);
+    } else {
+        gos_UpdateTexture(self->texCR, frame->cr.data, frame->cr.width*frame->cr.height);
+    }
+
+    // The dimensions of the planes are always rounded up to the next
+    // multiple of 16. We don't want to display these extra pixels, so
+    // calculate the crop w/h and hand it over to the shader program.
+    float cw = (float)frame->width / (float)frame->y.width;
+    float ch = (float)frame->height / (float)frame->y.height;
+    self->texture_crop_size_ = vec4(cw, ch, 0, 0);
+}
+
+void app_on_audio(plm_t *mpeg, plm_samples_t *samples, void *user) {
+	MC2Movie *self = (MC2Movie*)user;
+    (void)self;
+
+	int size = sizeof(float) * samples->count * 2;
+    gosAudio_EnqueueSamples(self->audio_res_, samples->interleaved, size);
+	//SDL_QueueAudio(3, samples->interleaved, size);
+}
+
 // Class MC2Movie
 void MC2Movie::init (const char *MC2Name, RECT mRect, bool useWaveFile)
 {
@@ -59,6 +119,8 @@ void MC2Movie::init (const char *MC2Name, RECT mRect, bool useWaveFile)
 		m_MC2Name = new char [strlen(MOVIEName)+1];
 		memset(m_MC2Name,0,strlen(MOVIEName)+1);
 		strcpy(m_MC2Name,MOVIEName);
+
+		SPEW(("MOVIE","playing movie: %s\n", MOVIEName));
 
 	//Set the volume based on master system volume.
 	// ONLY if we want silence!!!
@@ -74,9 +136,116 @@ void MC2Movie::init (const char *MC2Name, RECT mRect, bool useWaveFile)
 		strcpy(waveName,MOVIEName);
 	}
 
-				numHigh = 1;
+    numHigh = 1;
 
-			totalTexturesUsed = numWide * numHigh;
+    totalTexturesUsed = numWide * numHigh;
+
+    MC2Rect = mRect;
+
+    vec4 quad[4];
+	quad[0].x = MC2Rect.left;
+	quad[0].y = MC2Rect.top;
+	quad[0].z = 0;
+	quad[0].w = 0;
+
+	quad[1].x = MC2Rect.left;
+	quad[1].y = MC2Rect.bottom;
+	quad[1].z = 0;
+	quad[1].w = 1;
+
+	quad[2].x = MC2Rect.right;
+	quad[2].y = MC2Rect.bottom;
+	quad[2].z = 1;
+	quad[2].w = 1;
+
+	quad[3].x = MC2Rect.right;
+	quad[3].y = MC2Rect.top;
+	quad[3].z = 1;
+	quad[3].w = 0;
+
+    uint16_t ib[] = {0,2,1,0,3,2};
+
+
+    pimpl = (MoviePlayerImpl*)gos_Malloc(sizeof(MoviePlayerImpl));
+    char buf[1024];
+    sprintf(buf, "./data/movies/%s.mpg", MOVIEName);
+    plm_t* plm = plm_create_with_filename(buf);
+
+    if(!plm) {
+        SPEW(("[MOVIE]", "Could not create movie: %s\n", buf));
+        return;
+    }
+
+    pimpl->plm = plm;
+
+    if (!plm_probe(pimpl->plm, 5000 * 1024)) {
+        STOP(("No MPEG video or audio streams found in %s", MOVIEName));
+    }
+
+
+    SPEW((
+        "Opened %s - framerate: %f, samplerate: %d, duration: %f",
+        MOVIEName, 
+        plm_get_framerate(pimpl->plm),
+        plm_get_samplerate(pimpl->plm),
+        plm_get_duration(pimpl->plm)
+    ));
+
+    plm_set_video_decode_callback(pimpl->plm, app_on_video, this);
+    plm_set_audio_decode_callback(pimpl->plm, app_on_audio, this);
+
+    plm_set_loop(pimpl->plm, FALSE);
+    plm_set_audio_enabled(pimpl->plm, TRUE);
+    plm_set_audio_stream(pimpl->plm, 0);
+
+    // we create audio stream always if it is present
+    // even if separate wav file requested, in case wav file will not be found
+	if (plm_get_num_audio_streams(pimpl->plm) > 0) {
+        gosAudio_Format fmt;
+        fmt.nSamplesPerSec = plm_get_samplerate(pimpl->plm);
+        fmt.nChannels = 2;
+        fmt.wBitsPerSample = 32;
+        audio_res_ = gosAudio_CreateStreamedResource(&fmt);
+
+		// Adjust the audio lead time according to the audio_spec buffer size
+        const int audio_dev_sample_frame_buffer_size = 4096; // TODO: get from audio engine
+		plm_set_audio_lead_time(pimpl->plm, 
+            (double)audio_dev_sample_frame_buffer_size/ (double)fmt.nSamplesPerSec);
+    }
+
+    stillPlaying = true;
+    cur_movie_time_ = 0;
+    bPaused = false;
+    b_decode_audio_from_movie_ = !useWaveFile;
+    plm_set_audio_enabled(pimpl->plm, b_decode_audio_from_movie_);
+                        //
+	quad_ib_ = gos_CreateBuffer(
+            gosBUFFER_TYPE::INDEX, gosBUFFER_USAGE::STATIC_DRAW, sizeof(uint16_t), 6, ib);
+	quad_vb_ = gos_CreateBuffer(
+            gosBUFFER_TYPE::VERTEX, gosBUFFER_USAGE::STATIC_DRAW, sizeof(vec4), 4, quad);
+
+	gosVERTEX_FORMAT_RECORD vdecl[] = { 
+		{0, 2, false, sizeof(vec4), 0, gosVERTEX_ATTRIB_TYPE::FLOAT },
+		{1, 2, false, sizeof(vec4), sizeof(vec2) , gosVERTEX_ATTRIB_TYPE::FLOAT },
+	};
+	vdecl_ = gos_CreateVertexDeclaration(vdecl, sizeof(vdecl) / sizeof(gosVERTEX_FORMAT_RECORD));
+
+}
+
+void MC2Movie::destroy_stuff(struct MoviePlayerImpl* pimpl) {
+	plm_destroy(pimpl->plm);
+    gos_Free(pimpl);
+    pimpl = 0;
+
+    gos_DestroyVertexDeclaration(vdecl_);
+    gos_DestroyBuffer(quad_vb_);
+    gos_DestroyBuffer(quad_ib_);
+
+    gos_DestroyTexture(texY);
+    gos_DestroyTexture(texCB);
+    gos_DestroyTexture(texCR);
+
+    gosAudio_DestroyStreamedResource(&audio_res_);
 }
 
 //-----------------------------------------------------------------------
@@ -105,8 +274,27 @@ bool MC2Movie::update (void)
 	if (!soundStarted && separateWAVE)
 	{
 		soundStarted = true;
-		soundSystem->playDigitalStream(waveName);
+		if(-1 == soundSystem->playDigitalStream(waveName)) {
+            // if could not load wav file use audio stream from video
+            // !NB: because game relies on digital stream playing, it waits for it to 
+            // finish to start another audio, in case we are playing audio stream from video
+            // it will be paused if we go to e.g. options screen, and resumed if we return
+            // but game could already start playing another audio stream through soundSystem
+            // because it is not paused if we go to e.g. options screen
+            // also if we switch to options while movie is playing, as it will be paused and 
+            // digital stream not - it means when we return video will resume but audio may be already
+            // finished. Should we also update video nevertheless to be in sync or try to pause digital
+            // stream? or not use digital stream but use audio stream from video? but then we need to let
+            // sound system know that it is still playing
+            // NOTE: maybe just move video decoding to a differnt thread, this way it will be decoded even
+            // if we go to options screen and will be stayed in sync with audio.
+            if(audio_res_) { 
+                b_decode_audio_from_movie_ = true;
+                plm_set_audio_enabled(pimpl->plm, b_decode_audio_from_movie_);
+            }
+        }
 	}
+
 
 	if (
 		stillPlaying)
@@ -118,14 +306,46 @@ bool MC2Movie::update (void)
 			if (separateWAVE)
 				soundSystem->stopSupportSample();
 
+            // TODO: clear audio queue
+
 			return true;
 		}
+
+        if(!bPaused) {
+            plm_decode(pimpl->plm, frameLength);
+            cur_movie_time_ += frameLength;
+            stillPlaying = !plm_has_ended(pimpl->plm);
+            SPEW(("[MOVIE]", "Playing movie: time: %f\n", (float)cur_movie_time_));
+        }
 	
 		return false;
 	}
 
 	return true;
 }
+
+//Pause video playback.
+void MC2Movie::pause (bool pauseState)
+{
+    if (stillPlaying)
+    {
+    }
+
+    bPaused = pauseState;
+
+    forceStop = false;
+}
+
+//Restarts MC2 from beginning.  Can be called anytime.
+void MC2Movie::restart (void)
+{
+    stillPlaying = true;
+    forceStop = false;
+    if(pimpl->plm) {
+        plm_rewind(pimpl->plm);
+    }
+}
+
 
 //-----------------------------------------------------------------------
 //Actually moves frame data from MC2 to surface and/or texture(s) 
@@ -140,6 +360,26 @@ void MC2Movie::render (void)
 	if (!stillPlaying)
 		return;
 
+    if(!texY)
+        return;
+
+    gos_SetRenderState(gos_State_ZCompare, 0);
+    gos_SetRenderState(gos_State_ZWrite, 1);
+    //gos_SetRenderState(	gos_State_Culling, gos_Cull_);
+    gos_SetRenderState(gos_State_Texture, texY);
+    gos_SetRenderState(gos_State_Texture2, texCB);
+    gos_SetRenderState(gos_State_Texture3, texCR);
+    //gos_SetRenderViewport(viewport_[2], viewport_[3], viewport_[0], viewport_[1]);
+
+    HGOSRENDERMATERIAL mat = gos_getRenderMaterial("gos_YCbCr");
+    gos_SetRenderMaterialParameterMat4(mat, "projection_", gos_GetProjection());
+    gos_SetRenderMaterialParameterFloat4(mat, "texture_crop_size_", texture_crop_size_);
+    gos_ApplyRenderMaterial(mat);
+    gos_RenderIndexedArray(quad_ib_, quad_vb_, vdecl_);
+
+    gos_SetRenderState(gos_State_Texture, 0);
+    gos_SetRenderState(gos_State_Texture2, 0);
+    gos_SetRenderState(gos_State_Texture3, 0);
 }
 
 //--

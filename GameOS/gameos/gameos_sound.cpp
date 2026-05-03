@@ -51,17 +51,40 @@ class gosAudio {
 
 };
 
+class gosStreamedAudio {
+    public:
+
+        static gosStreamedAudio* makeStreamedAudio(SDL_AudioFormat fmt, int channels, int freq);
+        static void destroyStreamedAudio(gosStreamedAudio* paudio);
+        void queueData(const void* data, uint32_t size);
+        int dequeueData(void* data, uint32_t size);
+
+    private:
+
+        gosStreamedAudio():stream_(0) {}
+        ~gosStreamedAudio() { }
+
+        SDL_AudioStream* stream_;
+};
+
 class SoundEngine {
 
     public:
         SoundEngine():frequency_(0), format_(0), channels_(0), chunksize_(0), is_initialized_(false) {} 
         bool init(int frequency, bool b_fmt_16_bit, bool b_fmt_signed, bool b_stereo);
+        void update();
         void destroy();
 
         size_t addAudio(gosAudio* audio) {
             gosASSERT(audio);
             audioList_.push_back(audio);
             return audioList_.size()-1;
+        }
+
+        size_t addStreamedAudio(gosStreamedAudio* audio) {
+            gosASSERT(audio);
+            streamedAudioList_.push_back(audio);
+            return streamedAudioList_.size()-1;
         }
 
         gosAudio* getAudio(DWORD audio_id) {
@@ -74,11 +97,30 @@ class SoundEngine {
             return audioList_[audio_id];
         }
 
+        gosStreamedAudio* getStreamedAudio(DWORD audio_id) {
+            // TODO: return default audio
+            if(audio_id == INVALID_AUDIO_ID) {
+                return NULL;
+            }
+            gosASSERT(streamedAudioList_.size() > audio_id);
+            gosASSERT(streamedAudioList_[audio_id] != 0);
+            return streamedAudioList_[audio_id];
+        }
+
         void deleteAudio(gosAudio* audio) {
             gosAudio::destroyAudio(audio);
             std::vector<gosAudio*>::iterator it = std::remove(audioList_.begin(), audioList_.end(), audio);
             audioList_.erase(it, audioList_.end());
         }
+
+        void deleteStreamedAudio(gosStreamedAudio* audio) {
+            gosStreamedAudio::destroyStreamedAudio(audio);
+            SDL_ClearQueuedAudio(audio_device);
+            std::vector<gosStreamedAudio*>::iterator it = 
+                std::remove(streamedAudioList_.begin(), streamedAudioList_.end(), audio);
+            streamedAudioList_.erase(it, streamedAudioList_.end());
+        }
+
 
         SDL_AudioFormat getFormat() const { return format_; }
         int getNumChannels() const { return channels_; }
@@ -101,10 +143,12 @@ class SoundEngine {
         static const int NUM_CHANNELS = 32;
     private:
         std::vector<gosAudio*> audioList_;
+        std::vector<gosStreamedAudio*> streamedAudioList_;
         int frequency_; // Hz
         SDL_AudioFormat format_; // see SDL_audio.h
         int channels_; // mono/stereo
         int chunksize_;
+        SDL_AudioDeviceID audio_device;
 
         bool is_initialized_;
 
@@ -154,6 +198,23 @@ bool SoundEngine::init(int frequency, bool b_fmt_16_bit, bool b_fmt_signed, bool
     int num_allocated_chanels = Mix_AllocateChannels(NUM_CHANNELS);
     gosASSERT(NUM_CHANNELS == num_allocated_chanels);
 
+    // used for streamed audio
+    {
+		SDL_AudioSpec audio_spec;
+		SDL_memset(&audio_spec, 0, sizeof(audio_spec));
+		audio_spec.freq = frequency_;
+		audio_spec.format = format_;
+		audio_spec.channels = channels_;
+		audio_spec.samples = 4096;
+
+        SDL_AudioSpec obtained;
+		audio_device = SDL_OpenAudioDevice(NULL, 0, &audio_spec, &obtained, 0);
+		if (audio_device == 0) {
+			SDL_Log("Failed to open audio device: %s", SDL_GetError());
+		}
+		SDL_PauseAudioDevice(audio_device, 0);
+    }
+
 #if 0
     HGOSAUDIO hres;
     gosAudio_CreateResource(&hres, gosAudio_StreamedFile, "./data/sound/mc2_01.wav");
@@ -176,6 +237,19 @@ bool SoundEngine::init(int frequency, bool b_fmt_16_bit, bool b_fmt_signed, bool
     return rv == -1 ? false : true;
 }
 
+void SoundEngine::update() {
+
+    std::vector<gosStreamedAudio*>::iterator it = streamedAudioList_.begin();
+    char buf[4096];
+    int bytes_read = 0;
+    for(;it!=streamedAudioList_.end();++it) {
+        gosStreamedAudio* audio = *it;
+        while((bytes_read = audio->dequeueData(buf, sizeof(buf))) > 0) { 
+            SDL_QueueAudio(audio_device, buf, bytes_read);
+        }
+    }
+}
+
 void SoundEngine::destroy() {
 
     for(int i=0; i<NUM_CHANNELS;++i) {
@@ -188,6 +262,9 @@ void SoundEngine::destroy() {
     }
     audioList_.clear();
 
+    SDL_CloseAudioDevice(audio_device);
+    audio_device = 0;
+
     Mix_CloseAudio();
     Mix_Quit();
     SDL_QuitSubSystem(SDL_INIT_AUDIO);
@@ -197,6 +274,53 @@ void SoundEngine::destroy() {
 
 SoundEngine* g_sound_engine = NULL;
 
+gosStreamedAudio* gosStreamedAudio::makeStreamedAudio(SDL_AudioFormat fmt, int channels, int freq) {
+
+    const SDL_AudioFormat dst_fmt = g_sound_engine->getFormat();
+    const int dst_channels = g_sound_engine->getNumChannels();
+    const int dst_freq = g_sound_engine->getFrequency();
+
+    SDL_AudioStream *stream = 
+        SDL_NewAudioStream(fmt, channels, freq, dst_fmt, dst_channels, dst_freq);
+
+    if (stream == NULL) {
+        PAUSE(("SDL_NewAudioStream: Failed to create stream\n"));
+        return 0;
+    }
+
+    gosStreamedAudio* audio = new gosStreamedAudio();
+    audio->stream_ = stream;
+    return audio;
+}
+
+void gosStreamedAudio::destroyStreamedAudio(gosStreamedAudio* paudio) {
+    SDL_FreeAudioStream(paudio->stream_);
+    paudio->stream_ = 0;
+    delete paudio;
+}
+
+void gosStreamedAudio::queueData(const void* data, uint32_t size) {
+    if(-1 == SDL_AudioStreamPut(stream_, data, size)) {
+        SPEW(("[AUDIO]", "SDL_AudioStreamPut: Failed to put audio data to stream\n"));
+    }
+}
+
+int gosStreamedAudio::dequeueData(void* data, uint32_t size) {
+    //TODO: do we need this check?
+    //int bytes = SDL_AudioStreamAvailable(stream_);
+    //if (bytes < size) {
+    //    return 0;
+    //}
+
+    int bytes_read = SDL_AudioStreamGet(stream_, data, size);
+    if(-1 == bytes_read) {
+        SPEW(("[AUDIO]", "SDL_AudioStreamGet: Failed to get audio data from stream\n"));
+        return 0;
+    }
+
+    return bytes_read;
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 // possibly pass parameters
 bool gos_CreateAudio() {
@@ -205,6 +329,12 @@ bool gos_CreateAudio() {
         return g_sound_engine->init(44100/2, true, true, true);
     }
     return true;
+}
+
+void gos_UpdateAudio() {
+    if(g_sound_engine) {
+        g_sound_engine->update();
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -412,6 +542,39 @@ void __stdcall gosAudio_DestroyResource( HGOSAUDIO* hgosaudio )
         }
     }
 }
+
+__stdcall HGOSSTREAMEDAUDIO gosAudio_CreateStreamedResource(const gosAudio_Format* ga_wf)
+{
+    uint32_t src_freq = ga_wf->nSamplesPerSec;
+    gosASSERT(ga_wf->wBitsPerSample==8 || ga_wf->wBitsPerSample==16 || ga_wf->wBitsPerSample==32);
+    SDL_AudioFormat src_fmt = ga_wf->wBitsPerSample==8 ? AUDIO_S8 : 
+        ga_wf->wBitsPerSample == 32 ? AUDIO_F32LSB : AUDIO_S16LSB;
+    uint32_t src_channels = ga_wf->nChannels;
+
+    gosStreamedAudio* paudio = gosStreamedAudio::makeStreamedAudio(src_fmt, src_channels, src_freq);
+    if(!paudio) {
+        PAUSE(("makeStreamedAudio: Failed to create audio resource\n"));
+        return 0;
+    }
+    g_sound_engine->addStreamedAudio(paudio);
+    return paudio;
+}
+
+void __stdcall gosAudio_DestroyStreamedResource( HGOSSTREAMEDAUDIO* hgosaudio )
+{
+    gosASSERT(g_sound_engine && hgosaudio);
+    gosStreamedAudio* audio = *hgosaudio;
+    *hgosaudio = NULL;
+    g_sound_engine->deleteStreamedAudio(audio);
+}
+
+void __stdcall gosAudio_EnqueueSamples(HGOSSTREAMEDAUDIO hgosaudio, void* buf, int bytes) {
+
+    gosASSERT(g_sound_engine && hgosaudio);
+    gosStreamedAudio* audio = hgosaudio;
+    audio->queueData(buf, bytes);
+}
+
 
 //////////////////////////////////////////////////////////////////////////////////
 // This prepares the channel for a specific type of sound playback. Optimally,

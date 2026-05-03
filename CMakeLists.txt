@@ -76,6 +76,7 @@ get_filename_component(COM_PATH2 "./GameOS/gameos" ABSOLUTE)
 
 set(COMMON_INCLUDE_DIRS  ${COM_PATH1} ${COM_PATH2})
 set(THIRDPARTY_INCLUDE_DIRS "${CMAKE_PREFIX_PATH}/include")
+set(THIRDPARTY_INTREE_DIR "./thirdparty")
 
 add_subdirectory("./mclib/" "./out/mclib")
 add_subdirectory("./mclib/mlr" "./out/mclib/mlr")
@@ -181,6 +182,7 @@ set(SOURCES
 
 include_directories(${COMMON_INCLUDE_DIRS} "./mclib" "./gui" "./code" "./netlib")
 include_directories(${THIRDPARTY_INCLUDE_DIRS})
+include_directories(${THIRDPARTY_INTREE_DIR})
 
 if(NOT WIN32)
 	set(ADDITIONAL_LIBS dl)

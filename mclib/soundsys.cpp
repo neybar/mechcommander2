@@ -816,7 +816,10 @@ long SoundSystem::playDigitalStream (const char *streamName)
 			{
 				return(-1);
 			}
-		}
+		} else {
+            return (-1); // sebi:
+        }
+
 	}
 
 	return(NO_ERR);

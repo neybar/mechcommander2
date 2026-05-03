@@ -462,6 +462,8 @@ class gosMesh {
 		static void drawIndexed(HGOSBUFFER ib, HGOSBUFFER vb, HGOSVERTEXDECLARATION vdecl);
 
 		static const std::string s_tex1;
+		static const std::string s_tex2;
+		static const std::string s_tex3;
 
     private:
 
@@ -491,6 +493,8 @@ class gosMesh {
 };
 
 const std::string gosMesh::s_tex1 = std::string("tex1");
+const std::string gosMesh::s_tex2 = std::string("tex2");
+const std::string gosMesh::s_tex3 = std::string("tex3");
 
 void gosMesh::draw(gosRenderMaterial* material) const
 {
@@ -793,6 +797,11 @@ class gosTexture {
             texinfo->format_ = format_;
         }
 
+        void Update(unsigned char* data, DWORD size) {
+            gosASSERT(tex_.w*tex_.h * getTexFormatPixelSize(tex_.fmt_) >= size);
+            updateTexture(tex_, data, TF_COUNT/*tex_.fmt_*/);
+        }
+
     private:
         BYTE* pcompdata_;
         BYTE* plocked_area_;
@@ -912,10 +921,15 @@ bool gosTexture::createHardwareTexture() {
     } else {
         gosASSERT(tex_.w >0 && tex_.h > 0);
 
-        TexFormat tf = TF_RGBA8; // TODO: check format_ and do appropriate stuff
+        // TODO: check format_ and do appropriate stuff
+        TexFormat tf = format_ == gos_Texture_Luminance ? TF_R8 : TF_RGBA8; 
         DWORD* pdata = new DWORD[tex_.w*tex_.h];
-        for(int i=0;i<tex_.w*tex_.h;++i)
-            pdata[i] = 0xFF00FFFF;
+        if(format_ == gos_Texture_Luminance) {
+            memset(pdata, 0, tex_.w*tex_.h);
+        } else {
+            for(int i=0;i<tex_.w*tex_.h;++i)
+                pdata[i] = 0xFF00FFFF;
+        }
         tex_ = create2DTexture(tex_.w, tex_.h, tf, (const uint8_t*)pdata);
         delete[] pdata;
         return tex_.isValid();
@@ -1270,6 +1284,7 @@ class gosRenderer {
 
         gosRenderMaterial* basic_lighted_material_;
         gosRenderMaterial* basic_tex_lighted_material_;
+        gosRenderMaterial* YCbCr_material_;
         //
         uint32_t num_draw_calls_;
         uint32_t num_draw_calls_to_draw_;
@@ -1313,8 +1328,8 @@ void gosRenderer::init() {
     gosASSERT(text_);
 
 
-    const char* shader_list[] = {"gos_vertex", "gos_tex_vertex", "gos_text", "gos_vertex_lighted", "gos_tex_vertex_lighted"};
-    gosRenderMaterial** shader_ptr_list[] = { &basic_material_, &basic_tex_material_, &text_material_, &basic_lighted_material_, &basic_tex_lighted_material_};
+    const char* shader_list[] = {"gos_vertex", "gos_tex_vertex", "gos_text", "gos_vertex_lighted", "gos_tex_vertex_lighted", "gos_YCbCr"};
+    gosRenderMaterial** shader_ptr_list[] = { &basic_material_, &basic_tex_material_, &text_material_, &basic_lighted_material_, &basic_tex_lighted_material_, &YCbCr_material_};
 
     static_assert(COUNTOF(shader_list) == COUNTOF(shader_ptr_list), "Arrays myst have same size");
     uint32_t combinations[] = {0, SHADER_FLAG_INDEX_TO_MASK(gosGLOBAL_SHADER_FLAGS::ALPHA_TEST)};
@@ -2409,6 +2424,11 @@ void __stdcall gos_UnLockTexture( DWORD Handle )
     //gosASSERT(0 && "Not implemented");
 }
 
+void __stdcall gos_UpdateTexture( DWORD Handle, unsigned char* data, DWORD size) {
+    gosTexture* ptex = g_gos_renderer->getTexture(Handle);
+    ptex->Update(data, size);
+}
+
 void __stdcall gos_PushRenderStates()
 {
     gosASSERT(g_gos_renderer);
@@ -2789,6 +2809,8 @@ void __stdcall gos_ApplyRenderMaterial(HGOSRENDERMATERIAL material)
 
 	material->apply();
 	material->setSamplerUnit(gosMesh::s_tex1, 0);
+	material->setSamplerUnit(gosMesh::s_tex2, 1);
+	material->setSamplerUnit(gosMesh::s_tex3, 2);
 	material->setUniformBlock("lights_data", 0);
 }
 
