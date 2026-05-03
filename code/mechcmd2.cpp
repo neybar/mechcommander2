@@ -1210,7 +1210,7 @@ void __stdcall InitializeGameEngine()
 
 				result = systemFile->readIdFloat("AltitudeMaximumLo",Camera::AltitudeMaximumLo);
 				if (result != NO_ERR)
-					Camera::AltitudeMaximumHi = 1500.0f;
+					Camera::AltitudeMaximumLo = 1500.0f;
 			}
 		}
 	
