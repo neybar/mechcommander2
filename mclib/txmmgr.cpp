@@ -805,6 +805,12 @@ public:
 		gos_SetRenderMaterialUniformBlockBindingPoint(mat, "LightsData", LIGHT_DATA_ATTACHMENT_SLOT);
 		gos_SetRenderMaterialUniformBlockBindingPoint(mat, "SceneData", SCENE_DATA_ATTACHMENT_SLOT);
 
+        const mat4& projection = gos_GetProjection();
+        const vec4& vp = gos_GetRenderViewport();
+
+        gos_SetRenderMaterialParameterMat4(mat, "projection_", projection);
+        gos_SetRenderMaterialParameterFloat4(mat, "vp", vp);
+
 		gos_ApplyRenderMaterial(mat);
 
 		// TODO: either use this or setMat4("wvp_", ...);

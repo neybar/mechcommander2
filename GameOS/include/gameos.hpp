@@ -2242,7 +2242,10 @@ void __stdcall gos_RenderIndexedArray(HGOSBUFFER ib, HGOSBUFFER vb, HGOSVERTEXDE
 
 
 void __stdcall gos_SetRenderViewport(float x, float y, float w, float h);
-void __stdcall gos_GetRenderViewport(float* x, float* y, float* w, float* h); //sebi
+// x, y, w, h
+vec4 __stdcall gos_GetRenderViewport(); //sebi
+                                                                              //
+const mat4& __stdcall gos_GetProjection(); //sebi
 
 //
 // Set a renderstate
@@ -2532,7 +2535,6 @@ void __stdcall gos_ApplyRenderMaterial(HGOSRENDERMATERIAL material);
 void __stdcall gos_SetRenderMaterialParameterFloat4(HGOSRENDERMATERIAL material, const char* name, const float* v);
 void __stdcall gos_SetRenderMaterialParameterMat4(HGOSRENDERMATERIAL material, const char* name, const float* m);
 void __stdcall gos_SetRenderMaterialUniformBlockBindingPoint(HGOSRENDERMATERIAL material, const char* name, uint32_t slot);
-void __stdcall gos_SetCommonMaterialParameters(HGOSRENDERMATERIAL material);
 
 
 

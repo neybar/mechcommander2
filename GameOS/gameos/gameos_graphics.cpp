@@ -2472,15 +2472,14 @@ void __stdcall gos_SetRenderViewport(float x, float y, float w, float h)
 	g_gos_renderer->setRenderViewport(vec4(x, y, w, h));
 }
 
-void __stdcall gos_GetRenderViewport(float* x, float* y, float* w, float* h)
-{
-    gosASSERT(x && y && w && h);
+vec4 __stdcall gos_GetRenderViewport() {
     gosASSERT(g_gos_renderer);
-	vec4 vp = g_gos_renderer->getRenderViewport();
-	*x = vp.x;
-	*y = vp.y;
-	*w = vp.z;
-	*h = vp.w;
+	return g_gos_renderer->getRenderViewport();
+}
+
+const mat4& __stdcall gos_GetProjection() {
+    gosASSERT(g_gos_renderer);
+	return g_gos_renderer->getProj2Screen();
 }
 
 
@@ -2786,9 +2785,6 @@ void __stdcall gos_ApplyRenderMaterial(HGOSRENDERMATERIAL material)
 {
 	gosASSERT(material);
 
-	//setup commoin stuff
-	gos_SetCommonMaterialParameters(material);
-
 	material->apply();
 	material->setSamplerUnit(gosMesh::s_tex1, 0);
 	material->setUniformBlock("lights_data", 0);
@@ -2813,19 +2809,5 @@ void __stdcall gos_SetRenderMaterialUniformBlockBindingPoint(HGOSRENDERMATERIAL 
 	gosASSERT(material && name);
 	material->setUniformBlock(name, slot);
 }
-
-void __stdcall gos_SetCommonMaterialParameters(HGOSRENDERMATERIAL material)
-{
-	gosASSERT(material);
-	gosASSERT(g_gos_renderer);
-
-	const mat4& projection = getGosRenderer()->getProj2Screen();
-	const vec4& vp = getGosRenderer()->getRenderViewport();
-
-	// TODO: make typed parameters !!!!!!!!!!!!!!! not just float* pointers, helps track errors
-	gos_SetRenderMaterialParameterMat4(material, "projection_", projection);
-	gos_SetRenderMaterialParameterFloat4(material, "vp", vp);
-}
-
 
 #include "gameos_graphics_debug.cpp"
