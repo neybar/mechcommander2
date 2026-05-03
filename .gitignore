@@ -64,6 +64,8 @@ test_sound/
 *.obj
 *.tlog
 
+sniff.dat
+
 
 # Coverity
 cov-int/
