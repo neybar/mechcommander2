@@ -245,7 +245,9 @@ void MC2Movie::destroy_stuff(struct MoviePlayerImpl* pimpl) {
     gos_DestroyTexture(texCB);
     gos_DestroyTexture(texCR);
 
-    gosAudio_DestroyStreamedResource(&audio_res_);
+    if(audio_res_) {
+        gosAudio_DestroyStreamedResource(&audio_res_);
+    }
 }
 
 //-----------------------------------------------------------------------
