@@ -87,32 +87,6 @@ int main(int argc, char** argv)
     sprintf(textureFile, "%s%s", outFile, tex_ext);
     sprintf(glyphFile, "%s%s", outFile, glyph_ext);
 
-    graphics::set_verbose(false);
-
-    graphics::RenderWindowHandle win = graphics::create_window("text_tool", 512, 512);
-    if(!win)
-        return 1;
-
-    graphics::RenderContextHandle ctx = graphics::init_render_context(win);
-    if(!ctx)
-        return 1;
-
-    GLenum err = glewInit();
-    if (GLEW_OK != err)
-    {
-        SPEW(("GLEW", "Error: %s\n", glewGetErrorString(err)));
-        return 1;
-    }
-
-    SPEW(("GRAPHICS", "Status: Using GLEW %s\n", glewGetString(GLEW_VERSION)));
-    if (!GLEW_ARB_vertex_program || !GLEW_ARB_vertex_program)
-    {
-        SPEW(("GRAPHICS", "No shader program support\n"));
-        return 1;
-    }
-
-    graphics::make_current_context(ctx);
-
     // do stuff
 
     if(TTF_Init() == -1) {
@@ -251,9 +225,6 @@ int main(int argc, char** argv)
     TTF_CloseFont(font);
 
     TTF_Quit();
-
-    graphics::destroy_render_context(ctx);
-    graphics::destroy_window(win);
 
     return 0;
 }
