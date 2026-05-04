@@ -424,7 +424,7 @@ void __stdcall gosAudio_CreateResource( HGOSAUDIO* hgosaudio, enum gosAudio_Reso
     } else {
         gosASSERT(res_type == gosAudio_UserMemory);
         src_freq = ga_wf->nSamplesPerSec;
-        src_fmt = ga_wf->wBitsPerSample==8 ? AUDIO_S8 : AUDIO_S16LSB;
+        src_fmt = ga_wf->wBitsPerSample==8 ? AUDIO_U8 : AUDIO_S16LSB;
         src_channels = ga_wf->nChannels;
         databuf = (uint8_t*)data;
         src_datasize = size;
@@ -547,7 +547,7 @@ HGOSSTREAMEDAUDIO gosAudio_CreateStreamedResource(const gosAudio_Format* ga_wf)
 {
     uint32_t src_freq = ga_wf->nSamplesPerSec;
     gosASSERT(ga_wf->wBitsPerSample==8 || ga_wf->wBitsPerSample==16 || ga_wf->wBitsPerSample==32);
-    SDL_AudioFormat src_fmt = ga_wf->wBitsPerSample==8 ? AUDIO_S8 : 
+    SDL_AudioFormat src_fmt = ga_wf->wBitsPerSample==8 ? AUDIO_U8 : 
         ga_wf->wBitsPerSample == 32 ? AUDIO_F32LSB : AUDIO_S16LSB;
     uint32_t src_channels = ga_wf->nChannels;
 
