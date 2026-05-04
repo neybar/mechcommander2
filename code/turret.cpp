@@ -585,7 +585,11 @@ long Turret::update (void)
 		return(true);	//NEVER RETURN ANYTHING BUT TRUE!!!!!!!!!!!!!!!!
 	}
 
-	if (!turretsEnabled[getTeamId()]) {
+	//if (!turretsEnabled[getTeamId()]) {
+	// sebi: guard against bad teamID, no crash observed, but just in case
+	gosASSERT(getTeamId() >= MAX_TEAMS || getTeamId() < 0);
+	if (getTeamId() >= MAX_TEAMS || getTeamId()<0 || !turretsEnabled[getTeamId()]) {
+	//~sebi:
 		targetWID = 0;
 	}
 

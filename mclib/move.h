@@ -1211,6 +1211,8 @@ class GlobalMap {
 
 			isGateDisabledCallback = NULL;
 			isGateOpenCallback = NULL;
+
+			pathExistsTable = NULL; //sebi:
 		}
 
 		GlobalMap (void) {
