@@ -543,7 +543,7 @@ void __stdcall gosAudio_DestroyResource( HGOSAUDIO* hgosaudio )
     }
 }
 
-__stdcall HGOSSTREAMEDAUDIO gosAudio_CreateStreamedResource(const gosAudio_Format* ga_wf)
+HGOSSTREAMEDAUDIO gosAudio_CreateStreamedResource(const gosAudio_Format* ga_wf)
 {
     uint32_t src_freq = ga_wf->nSamplesPerSec;
     gosASSERT(ga_wf->wBitsPerSample==8 || ga_wf->wBitsPerSample==16 || ga_wf->wBitsPerSample==32);
@@ -560,7 +560,7 @@ __stdcall HGOSSTREAMEDAUDIO gosAudio_CreateStreamedResource(const gosAudio_Forma
     return paudio;
 }
 
-void __stdcall gosAudio_DestroyStreamedResource( HGOSSTREAMEDAUDIO* hgosaudio )
+void gosAudio_DestroyStreamedResource( HGOSSTREAMEDAUDIO* hgosaudio )
 {
     gosASSERT(g_sound_engine && hgosaudio);
     gosStreamedAudio* audio = *hgosaudio;
@@ -568,7 +568,7 @@ void __stdcall gosAudio_DestroyStreamedResource( HGOSSTREAMEDAUDIO* hgosaudio )
     g_sound_engine->deleteStreamedAudio(audio);
 }
 
-void __stdcall gosAudio_EnqueueSamples(HGOSSTREAMEDAUDIO hgosaudio, void* buf, int bytes) {
+void gosAudio_EnqueueSamples(HGOSSTREAMEDAUDIO hgosaudio, void* buf, int bytes) {
 
     gosASSERT(g_sound_engine && hgosaudio);
     gosStreamedAudio* audio = hgosaudio;

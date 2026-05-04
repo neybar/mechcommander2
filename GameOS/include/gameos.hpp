@@ -663,7 +663,7 @@ typedef struct _gosAudio_ChannelInfo
 void __stdcall gosAudio_CreateResource( HGOSAUDIO* hgosaudio, enum gosAudio_ResourceType,  const char* file_name, gosAudio_Format* ga_wf = 0, void* data = 0, int size = 0, bool only2D = 0);
 void __stdcall gosAudio_CreateResource( HGOSAUDIO * hgosaudio, const char * identifier_name, HGOSFILE file, DWORD offset, bool only2D = 0);
 
-__stdcall HGOSSTREAMEDAUDIO gosAudio_CreateStreamedResource(const gosAudio_Format* ga_wf);
+HGOSSTREAMEDAUDIO __stdcall gosAudio_CreateStreamedResource(const gosAudio_Format* ga_wf);
 void __stdcall gosAudio_DestroyStreamedResource( HGOSSTREAMEDAUDIO* hgosaudio );
 void __stdcall gosAudio_EnqueueSamples(HGOSSTREAMEDAUDIO hgosaudio, void* buf, int bytes);
 
