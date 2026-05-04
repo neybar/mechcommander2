@@ -71,27 +71,24 @@ void app_on_video(plm_t *mpeg, plm_frame_t *frame, void *user) {
         DWORD wh = (frame->y.height << 16) | frame->y.width;
         self->sizeY = vec2(frame->y.width, frame->y.height);
         self->texY = gos_NewEmptyTexture(gos_Texture_Luminance,"MovieY", wh, gosHint_DisableMipmap);
-    } else {
-        gos_UpdateTexture(self->texY, frame->y.data, frame->y.width*frame->y.height);
     }
+	gos_UpdateTexture(self->texY, frame->y.data, frame->y.width * frame->y.height);
 
     if(self->sizeCB != vec2(frame->cb.width, frame->cb.height)) {
         gos_DestroyTexture(self->texCB);
         DWORD wh = (frame->cb.height << 16) | frame->cb.width;
         self->sizeCB = vec2(frame->cb.width, frame->cb.height);
         self->texCB = gos_NewEmptyTexture(gos_Texture_Luminance,"MovieCB", wh, gosHint_DisableMipmap);
-    } else {
-        gos_UpdateTexture(self->texCB, frame->cb.data, frame->cb.width*frame->cb.height);
     }
+	gos_UpdateTexture(self->texCB, frame->cb.data, frame->cb.width * frame->cb.height);
 
     if(self->sizeCR != vec2(frame->cr.width, frame->cr.height)) {
         gos_DestroyTexture(self->texCR);
         DWORD wh = (frame->cr.height << 16) | frame->cr.width;
         self->sizeCR = vec2(frame->cr.width, frame->cr.height);
         self->texCR = gos_NewEmptyTexture(gos_Texture_Luminance,"MovieCR", wh, gosHint_DisableMipmap);
-    } else {
-        gos_UpdateTexture(self->texCR, frame->cr.data, frame->cr.width*frame->cr.height);
     }
+	gos_UpdateTexture(self->texCR, frame->cr.data, frame->cr.width * frame->cr.height);
 
     // The dimensions of the planes are always rounded up to the next
     // multiple of 16. We don't want to display these extra pixels, so
@@ -99,6 +96,8 @@ void app_on_video(plm_t *mpeg, plm_frame_t *frame, void *user) {
     float cw = (float)frame->width / (float)frame->y.width;
     float ch = (float)frame->height / (float)frame->y.height;
     self->texture_crop_size_ = vec4(cw, ch, 0, 0);
+
+	self->b_got_any_frame = true;
 }
 
 void app_on_audio(plm_t *mpeg, plm_samples_t *samples, void *user) {
@@ -106,6 +105,7 @@ void app_on_audio(plm_t *mpeg, plm_samples_t *samples, void *user) {
     (void)self;
 
 	int size = sizeof(float) * samples->count * 2;
+    //printf("decoded: %d bytes\n", size);
     gosAudio_EnqueueSamples(self->audio_res_, samples->interleaved, size);
 	//SDL_QueueAudio(3, samples->interleaved, size);
 }
@@ -142,26 +142,18 @@ void MC2Movie::init (const char *MC2Name, RECT mRect, bool useWaveFile)
 
     MC2Rect = mRect;
 
-    vec4 quad[4];
-	quad[0].x = MC2Rect.left;
-	quad[0].y = MC2Rect.top;
-	quad[0].z = 0;
-	quad[0].w = 0;
+    vec2 quad[4];
+    quad[0].x = 0;
+    quad[0].y = 0;
 
-	quad[1].x = MC2Rect.left;
-	quad[1].y = MC2Rect.bottom;
-	quad[1].z = 0;
-	quad[1].w = 1;
+    quad[1].x = 0;
+    quad[1].y = 1;
 
-	quad[2].x = MC2Rect.right;
-	quad[2].y = MC2Rect.bottom;
-	quad[2].z = 1;
-	quad[2].w = 1;
+    quad[2].x = 1;
+    quad[2].y = 1;
 
-	quad[3].x = MC2Rect.right;
-	quad[3].y = MC2Rect.top;
-	quad[3].z = 1;
-	quad[3].w = 0;
+    quad[3].x = 1;
+    quad[3].y = 0;
 
     uint16_t ib[] = {0,2,1,0,3,2};
 
@@ -222,11 +214,10 @@ void MC2Movie::init (const char *MC2Name, RECT mRect, bool useWaveFile)
 	quad_ib_ = gos_CreateBuffer(
             gosBUFFER_TYPE::INDEX, gosBUFFER_USAGE::STATIC_DRAW, sizeof(uint16_t), 6, ib);
 	quad_vb_ = gos_CreateBuffer(
-            gosBUFFER_TYPE::VERTEX, gosBUFFER_USAGE::STATIC_DRAW, sizeof(vec4), 4, quad);
+            gosBUFFER_TYPE::VERTEX, gosBUFFER_USAGE::STATIC_DRAW, sizeof(vec2), 4, quad);
 
 	gosVERTEX_FORMAT_RECORD vdecl[] = { 
-		{0, 2, false, sizeof(vec4), 0, gosVERTEX_ATTRIB_TYPE::FLOAT },
-		{1, 2, false, sizeof(vec4), sizeof(vec2) , gosVERTEX_ATTRIB_TYPE::FLOAT },
+		{0, 2, false, sizeof(vec2), 0, gosVERTEX_ATTRIB_TYPE::FLOAT },
 	};
 	vdecl_ = gos_CreateVertexDeclaration(vdecl, sizeof(vdecl) / sizeof(gosVERTEX_FORMAT_RECORD));
 
@@ -362,7 +353,7 @@ void MC2Movie::render (void)
 	if (!stillPlaying)
 		return;
 
-    if(!texY)
+    if(!b_got_any_frame)
         return;
 
     gos_SetRenderState(gos_State_ZCompare, 0);
@@ -376,6 +367,8 @@ void MC2Movie::render (void)
     HGOSRENDERMATERIAL mat = gos_getRenderMaterial("gos_YCbCr");
     gos_SetRenderMaterialParameterMat4(mat, "projection_", gos_GetProjection());
     gos_SetRenderMaterialParameterFloat4(mat, "texture_crop_size_", texture_crop_size_);
+    vec4 scale_offset(MC2Rect.left, MC2Rect.top, MC2Rect.right - MC2Rect.left, MC2Rect.bottom - MC2Rect.top);
+    gos_SetRenderMaterialParameterFloat4(mat, "scale_offset", scale_offset);
     gos_ApplyRenderMaterial(mat);
     gos_RenderIndexedArray(quad_ib_, quad_vb_, vdecl_);
 

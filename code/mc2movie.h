@@ -58,6 +58,7 @@ class MC2Movie
             vdecl_ = 0;
             audio_res_ = 0;
             b_decode_audio_from_movie_ = false;
+			b_got_any_frame = false;
 		}
 
 		~MC2Movie (void)
@@ -120,6 +121,7 @@ class MC2Movie
 			return m_MC2Name;
 		}
 		
+		bool b_got_any_frame;
         DWORD texY, texCB, texCR;
         vec2 sizeY, sizeCB, sizeCR;        struct MoviePlayerImpl* pimpl;
         void destroy_stuff(struct MoviePlayerImpl* pimpl);
