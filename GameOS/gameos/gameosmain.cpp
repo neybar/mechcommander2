@@ -343,8 +343,8 @@ int main(int argc, char** argv)
         g_exit |= gosExitGameOS();
 
 		uint64_t end_tick = timing::gettickcount();
-		uint64_t dt = timing::ticks2ms(end_tick - start_tick);
-		frameRate = 1000.0f / (float)dt;
+		double dt_sec = timing::ticks2sec(end_tick - start_tick);
+		frameRate = (float)(1.0 / dt_sec);
     }
     
     Environment.TerminateGameEngine();

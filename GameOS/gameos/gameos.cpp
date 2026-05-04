@@ -93,26 +93,16 @@ double __stdcall gos_GetElapsedTime( int RealTime )
 {
     (void)RealTime;
 
-#ifdef PLATFORM_WINDOWS
 	uint64_t ticks = timing::gettickcount();
-	return (double)timing::ticks2ms(ticks) / 1000.0;
-#else
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
-    double time_sec = ts.tv_sec;
-    if(g_prev_elapsed_time_value < 0.0) {
-        g_prev_elapsed_time_value = time_sec;
-        return time_sec;
-    }
+    double elapsed_sec = timing::ticks2sec(ticks);
     
-    if(Environment.MaxTimeDelta > 0 && time_sec - g_prev_elapsed_time_value > Environment.MaxTimeDelta) {
+    if(Environment.MaxTimeDelta > 0 && elapsed_sec - g_prev_elapsed_time_value > Environment.MaxTimeDelta) {
         g_prev_elapsed_time_value += Environment.MaxTimeDelta;
         return g_prev_elapsed_time_value;
     }
 
-    g_prev_elapsed_time_value = time_sec;
-    return time_sec;
-#endif
+    g_prev_elapsed_time_value = elapsed_sec;
+    return elapsed_sec;
 }
 
 double __stdcall gos_GetHiResTime()

@@ -49,22 +49,33 @@ namespace timing {
 #else
 		struct timespec ts;
 		clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
-		size_t milliseconds = ts.tv_sec * 1e+3;
-		milliseconds += ts.tv_nsec / 1e+6;
-		return milliseconds;
+		uint64_t nanosec = (uint64_t)ts.tv_sec * 1e+9 + ts.tv_nsec;
+		return nanosec;
 #endif
 	}
 
-	uint64_t ticks2ms(uint64_t ticks)
+	double ticks2ms(uint64_t ticks)
 	{
 #ifdef _DEBUG
 		assert(initialized);
 #endif
 #ifdef PLATFORM_WINDOWS
-		ticks = (ticks * 1000) / Frequency.QuadPart;
-		return ticks;
+		double dt = (double)(ticks) / Frequency.QuadPart;
+		return 1000 * ticks;
 #else
-		return ticks;
+		return (double)ticks / 1e+6;
+#endif
+	}
+
+	double ticks2sec(uint64_t ticks)
+	{
+#ifdef _DEBUG
+		assert(initialized);
+#endif
+#ifdef PLATFORM_WINDOWS
+		return (double)(ticks) / Frequency.QuadPart;
+#else
+		return (double) ticks / 1e+9;
 #endif
 	}
 
