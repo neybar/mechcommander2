@@ -239,6 +239,9 @@ void MC2Movie::destroy_stuff(struct MoviePlayerImpl* pimpl) {
     if(audio_res_) {
         gosAudio_DestroyStreamedResource(&audio_res_);
     }
+
+    if (separateWAVE)
+        soundSystem->stopSupportSample();
 }
 
 //-----------------------------------------------------------------------
@@ -322,6 +325,8 @@ bool MC2Movie::update (void)
 //Pause video playback.
 void MC2Movie::pause (bool pauseState)
 {
+    //TODO: sebi: What if sound sample is separate? how do I pauseSupportSample?
+
     if (stillPlaying)
     {
     }
@@ -339,6 +344,10 @@ void MC2Movie::restart (void)
     if(pimpl->plm) {
         plm_rewind(pimpl->plm);
     }
+
+    //TODO: sebi: What if sound sample is separate? stop / start DigitalSample?
+    // have not seen such movies yet
+
 }
 
 
