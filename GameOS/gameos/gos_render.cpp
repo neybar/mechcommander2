@@ -24,6 +24,7 @@ struct RenderWindow {
     SDL_Window* window_;
     int width_;
     int height_;
+    int dpi_scale_;
 };
 
 struct RenderContext {
@@ -43,10 +44,11 @@ void set_verbose(bool is_verbose)
 }
 
 //==============================================================================
-RenderWindow* create_window(const char* pwinname, int width, int height)
+RenderWindow* create_window(
+        const char* pwinname, int width, int height, int wanted_bpp, int display_index)
 {
 	int i, j, m, n;
-	SDL_DisplayMode fullscreen_mode;
+	//SDL_DisplayMode fullscreen_mode;
     SDL_Window* window = NULL; 
 
     if (VERBOSE_VIDEO) {
@@ -114,14 +116,25 @@ RenderWindow* create_window(const char* pwinname, int width, int height)
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, SDL_GL_CONTEXT_DEBUG_FLAG);
 	//SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, GL_CONTEXT_FLAG_DEBUG_BIT);
 
+    // some defaults just to shut up static analyzer
+    SDL_DisplayMode preferred_mode = {
+        .format = SDL_PIXELFORMAT_RGB888,            /**< pixel format */
+        .w = 800,
+        .h = 600,                      /**< height, in screen coordinates */
+        .refresh_rate = 0           /**< refresh rate (or zero for unspecified) */
+    };
+
     if (VERBOSE_MODES) {
         SDL_DisplayMode mode;
         int bpp;
         Uint32 Rmask, Gmask, Bmask, Amask;
 
-        n = SDL_GetNumVideoDisplays();
-        fprintf(stderr, "Number of displays: %d\n", n);
-        for (i = 0; i < n; ++i) {
+        int ndisp = SDL_GetNumVideoDisplays();
+        display_index = display_index < 0 ? 0 : display_index;
+        display_index = display_index >= ndisp ? 0 : display_index;
+
+        fprintf(stderr, "Number of displays: %d\n", ndisp);
+        for (i = 0; i < ndisp; ++i) {
             fprintf(stderr, "Display %d:\n", i);
 
             SDL_GetDesktopDisplayMode(i, &mode);
@@ -145,12 +158,14 @@ RenderWindow* create_window(const char* pwinname, int width, int height)
                 fprintf(stderr, "No available fullscreen video modes\n");
             } else {
                 fprintf(stderr, "  Fullscreen video modes:\n");
-                for (j = 0; j < m; ++j) {
-                    SDL_GetDisplayMode(i, j, &mode);
-                    SDL_PixelFormatEnumToMasks(mode.format, &bpp, &Rmask,
-                            &Gmask, &Bmask, &Amask);
-                    fprintf(stderr,
-                            "    Mode %d: %dx%d@%dHz, %d bits-per-pixel (%s)\n",
+                for (int mode_idx = 0; mode_idx < m; ++mode_idx) {
+                    SDL_GetDisplayMode(i, mode_idx, &mode);
+                    // get preferred mode either from given display or just first available display
+                    if(mode_idx == 0 && display_index == i) {
+                        preferred_mode = mode;
+                    }
+                    SDL_PixelFormatEnumToMasks(mode.format, &bpp, &Rmask, &Gmask, &Bmask, &Amask);
+                    fprintf(stderr, "    Mode %d: %dx%d@%dHz, %d bits-per-pixel (%s)\n",
                             j, mode.w, mode.h, mode.refresh_rate, bpp,
                             SDL_GetPixelFormatName(mode.format));
                     if (Rmask || Gmask || Bmask) {
@@ -185,29 +200,45 @@ RenderWindow* create_window(const char* pwinname, int width, int height)
         }
     }
 
-    SDL_zero(fullscreen_mode);
-    switch (/*state->depth*/0) {
+    switch (wanted_bpp) {
         case 8:
-            fullscreen_mode.format = SDL_PIXELFORMAT_INDEX8;
+            preferred_mode.format = SDL_PIXELFORMAT_INDEX8;
             break;
         case 15:
-            fullscreen_mode.format = SDL_PIXELFORMAT_RGB555;
+            preferred_mode.format = SDL_PIXELFORMAT_RGB555;
             break;
         case 16:
-            fullscreen_mode.format = SDL_PIXELFORMAT_RGB565;
+            preferred_mode.format = SDL_PIXELFORMAT_RGB565;
             break;
         case 24:
-            fullscreen_mode.format = SDL_PIXELFORMAT_RGB24;
+            preferred_mode.format = SDL_PIXELFORMAT_RGB24;
             break;
-        default:
-            fullscreen_mode.format = SDL_PIXELFORMAT_RGB888;
+        case 32:
+            preferred_mode.format = SDL_PIXELFORMAT_RGB888;
             break;
     }
-    //fullscreen_mode.refresh_rate = state->refresh_rate;
+
+    preferred_mode.w = width>0 ? width : preferred_mode.w;
+    preferred_mode.h = height>0 ? height: preferred_mode.h;
+    preferred_mode.driverdata = nullptr;
+
+    //Some info about fullscreen/win size issues: https://github.com/libsdl-org/SDL/issues/8544
+
+    // take care about DPI (not necessary if using SDL_WINDOW_FULLSCREEN_DESKTOP, as window size will have
+    // a DPI-aware size after creation
+    float dpi = 96.0f;
+    if (SDL_GetDisplayDPI(display_index, &dpi, nullptr, nullptr) == 0) {
+        fprintf(stdout, "Display%d DPI: %f\n", display_index, dpi);
+        preferred_mode.w = preferred_mode.w * (dpi / 96);
+        preferred_mode.h = preferred_mode.h * (dpi / 96);
+    }
 
     {
         window = SDL_CreateWindow(pwinname ? pwinname : "--", 
-                SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, width, height, SDL_WINDOW_OPENGL|SDL_WINDOW_ALLOW_HIGHDPI);
+            SDL_WINDOWPOS_CENTERED_DISPLAY(display_index), 
+            SDL_WINDOWPOS_CENTERED_DISPLAY(display_index), 
+            preferred_mode.w, preferred_mode.h, 
+            SDL_WINDOW_OPENGL|SDL_WINDOW_ALLOW_HIGHDPI|SDL_WINDOW_RESIZABLE);
 
         if (!window) {
             fprintf(stderr, "Couldn't create window: %s\n", SDL_GetError());
@@ -217,19 +248,21 @@ RenderWindow* create_window(const char* pwinname, int width, int height)
 
         // NULL to use window width and height and display refresh rate
         // only need to set mode if wanted fullscreen
+#if 0
         if (SDL_SetWindowDisplayMode(window, NULL) < 0) {
             fprintf(stderr, "Can't set up display mode: %s\n", SDL_GetError());
             SDL_DestroyWindow(window);
             return NULL;
         }
-
+#endif
         SDL_ShowWindow(window);
     }
 
     RenderWindow* rw = new RenderWindow();
     rw->window_ = window;
-    rw->width_ = width;
-    rw->height_ = height;
+    rw->width_ = preferred_mode.w;
+    rw->height_ = preferred_mode.h;
+    rw->dpi_scale_ = dpi / 96;
 
     g_sdl_window = window;
 
@@ -405,7 +438,27 @@ bool set_window_fullscreen(RenderWindowHandle rw_handle, bool fullscreen)
         return false;
     }
 
+    if(!fullscreen) {
+        int i = SDL_GetWindowDisplayIndex(rw->window_);
+        SDL_SetWindowPosition(rw->window_, SDL_WINDOWPOS_CENTERED_DISPLAY(i), SDL_WINDOWPOS_CENTERED_DISPLAY(i));
+    }
+
     return true;
+}
+
+bool is_window_fullscreen(RenderWindowHandle rw_handle)
+{
+    RenderWindow* rw = (RenderWindow*)rw_handle;
+    assert(rw);
+
+    Uint32 flags = SDL_GetWindowFlags(g_sdl_window);
+    bool fullscreen = (flags & (SDL_WINDOW_FULLSCREEN | SDL_WINDOW_FULLSCREEN_DESKTOP)) != 0;
+    return fullscreen;
+}
+
+//==============================================================================
+void grab_window(RenderWindowHandle h, bool b_grab) {
+    SDL_SetWindowGrab(h->window_, b_grab ? SDL_TRUE : SDL_FALSE);
 }
 
 //==============================================================================
@@ -494,8 +547,20 @@ void get_window_size(RenderWindowHandle rw_handle, int* width, int* height)
 {
     RenderWindow* rw = (RenderWindow*)rw_handle;
     assert(rw && width && height);
-    *width = rw->width_;
-    *height = rw->height_;
+    SDL_GetWindowSize(rw_handle->window_, width, height);
+    log_info("SDL_GetWindowSize: %dx%d\n", *width, *height);
+    // sometimes window(and drawable) can actually have smaller size (e.g. like 2 pixels, happened when launching from root user)
+    //assert(rw->width_ == *width);
+    //assert(rw->height_ == *height);
+}
+
+//==============================================================================
+int get_window_bpp(RenderWindowHandle rw_handle)
+{
+    RenderWindow* rw = (RenderWindow*)rw_handle;
+    assert(rw);
+    Uint32 fmt = SDL_GetWindowPixelFormat(rw_handle->window_);
+    return SDL_BITSPERPIXEL(fmt);
 }
 
 //==============================================================================

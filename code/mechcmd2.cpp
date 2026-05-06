@@ -94,6 +94,7 @@ extern long RadioVolume;
 extern long BettyVolume;
 long resolutionX = 0;
 long resolutionY = 0;
+long displayNumber = 0;
 long renderer = 0;
 long FilterState = gos_FilterNone;
 bool quitGame = FALSE;
@@ -1340,6 +1341,10 @@ void __stdcall InitializeGameEngine()
 				result = optsFile->readIdBoolean("FullScreen",fullScreen);
 				if (result != NO_ERR)
 					fullScreen = true;
+                
+				result = optsFile->readIdLong("DisplayNumber", displayNumber);
+				if (result != NO_ERR)
+					displayNumber = 0;
 	
 				result = optsFile->readIdLong("Brightness",gammaLevel);
 				if (result != NO_ERR)
@@ -1737,6 +1742,16 @@ void __stdcall InitializeGameEngine()
 
 		MessageBox(NULL,msgBuffer,msgTitle,MB_OK);
 
+        HGOSWINDOW win = gos_CreateWindow(Environment.screenWidth, Environment.screenHeight, 24, Environment.displayIndex);
+        if(!win) {
+            SPEW(("[INIT]", "Failed to create window\n"));
+            return;
+        }
+        if(false == gos_CreateRenderer(win, Environment.screenWidth, Environment.screenHeight)) {
+            SPEW(("[INIT]", "Failed to create renderer\n"));
+            return;
+        }
+
 		//-------------------------------------------------------------
 		// Find the CDPath in the registry and save it off so I can
 		// look in CD Install Path for files.
@@ -1988,6 +2003,9 @@ void __stdcall TerminateGameEngine()
 			delete [] ForceGroupIcon::s_textureMemory; 
 			ForceGroupIcon::s_textureMemory = NULL; 
 		}
+
+        gos_DestroyAudio();
+
 	}
 	else
 	{
@@ -1996,6 +2014,10 @@ void __stdcall TerminateGameEngine()
 		free(indexArray);
 		indexArray = NULL;
 	}
+
+    gos_DestroyRenderer();
+    gos_DestroyWindow();
+
 }
 
 //-------------------------------
@@ -2703,6 +2725,7 @@ void __stdcall GetGameOSEnvironment(const char* CommandLine )
 	Environment.Key_Exit				= 0;
 	Environment.screenWidth				= 800;
 	Environment.screenHeight			= 600;
+	Environment.displayIndex            = 0;
 	Environment.bitDepth				= 16;
 	Environment.fullScreen				= 0;
 

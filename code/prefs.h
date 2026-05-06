@@ -39,6 +39,7 @@ public:
 	//long resolution;
     int resolutionX;
     int resolutionY;
+    int displayNumber;
 
 	bool fullScreen;
 	long gammaLevel;

@@ -27,6 +27,7 @@ extern long GameDifficulty;
 extern long renderer;
 extern long resolutionX;
 extern long resolutionY;
+extern long displayNumber;
 extern long gammaLevel;
 extern bool useLeftRightMouseProfile;
 extern bool useNonWeaponEffects;
@@ -57,6 +58,7 @@ CPrefs::CPrefs() {
     resolutionX = 800;
     resolutionY = 600;
     bitDepth = 32;
+    displayNumber = 0;
 
 	fullScreen = false;
 	gammaLevel = 0;
@@ -189,6 +191,10 @@ int CPrefs::load( const char* pFileName ) {
 			result = prefsFile->readIdBoolean("FullScreen",fullScreen);
 			if (result != NO_ERR)
 				fullScreen = false;
+
+			result = prefsFile->readIdInt("DisplayNumber", displayNumber);
+			if (result != NO_ERR)
+				displayNumber = 0;
 
 			result = prefsFile->readIdLong("Brightness",gammaLevel);
 			if (result != NO_ERR)
@@ -326,6 +332,7 @@ int CPrefs::save() {
 			result = prefsFile->writeIdLong("ResolutionX",resolutionX);
 			result = prefsFile->writeIdLong("ResolutionY",resolutionY);
 			result = prefsFile->writeIdBoolean("FullScreen",fullScreen);
+			result = prefsFile->writeIdLong("DisplayNumber",displayNumber);
 			result = prefsFile->writeIdLong("Brightness",gammaLevel);
 			result = prefsFile->writeIdBoolean( "useLeftRightMouseProfile", useLeftRightMouseProfile );
 			char blockName[64];
@@ -401,6 +408,7 @@ int CPrefs::applyPrefs(bool applyRes) {
 	//::resolution = this->resolution;
 	::resolutionX = this->resolutionX;
 	::resolutionY = this->resolutionY;
+	::displayNumber = this->displayNumber;
 	::gammaLevel = this->gammaLevel;
 	mc2UseAsyncMouse = this->asyncMouse;
 	::useLeftRightMouseProfile = this->useLeftRightMouseProfile;
@@ -433,11 +441,31 @@ int CPrefs::applyPrefs(bool applyRes) {
 		if (Environment.fullScreen && fullScreen)
 			localFullScreen = false;
 
+        HGOSWINDOW win = gos_GetWindow();
+        if(!win)
+            win = gos_CreateWindow(this->resolutionX, this->resolutionY, bitDepth, this->displayNumber);
+        if(!win) {
+            SPEW(("[INIT]", "Failed to create window\n"));
+            return -1;
+        }
+
+
+        if(!gos_GetRenderer()) {
+            if(false == gos_CreateRenderer(win, this->resolutionX, this->resolutionY)) {
+                SPEW(("[INIT]", "Failed to create renderer\n"));
+                return -1;
+            }
+        }
 
         if (renderer == 3)
             gos_SetScreenMode(this->resolutionX, this->resolutionY, bitDepth,0,0,0,true,localFullScreen,0,localWindow,0,localRenderer);
         else
             gos_SetScreenMode(this->resolutionX, this->resolutionY, bitDepth,renderer,0,0,0,localFullScreen,0,localWindow,0,localRenderer);
+
+        if(!gos_CreateAudio())
+        {   // not an error
+            SPEW(("AUDIO", "Failed to create audio\n"));
+        }
 
         /*
 		switch (resolution)

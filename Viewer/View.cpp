@@ -65,6 +65,7 @@ long renderer = 0;
 long GameDifficulty = 0;
 long resolutionX = 0;
 long resolutionY = 0;
+long displayNumber = 0;
 bool useUnlimitedAmmo = true;
 
 Camera* eye = NULL;

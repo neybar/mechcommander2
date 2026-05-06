@@ -193,7 +193,11 @@ typedef struct gos_StringRes*   HSTRRES; //sebi
 typedef class gosBuffer*		HGOSBUFFER; //sebi
 typedef class gosVertexDeclaration*	HGOSVERTEXDECLARATION; //sebi
 typedef class gosRenderMaterial*	HGOSRENDERMATERIAL; //sebi
-
+namespace graphics {
+    struct RenderWindow;
+};
+typedef struct graphics::RenderWindow* HGOSWINDOW; //sebi
+class gosRenderer;
 
 
 //////////////////////////////////////////////////////////////////////////////////
@@ -220,6 +224,7 @@ typedef struct
 //
 // Current screen mode (application can check, but may change from frame to frame)
 //
+    int     displayIndex;           // 0
 	int		screenWidth;			// 640
 	int		screenHeight;			// 480
 	int		drawableWidth;			// 640
@@ -658,6 +663,10 @@ typedef struct _gosAudio_ChannelInfo
 } gosAudio_ChannelInfo;
 
 //////////////////////////////////////////////////////////////////////////////////
+
+bool gos_CreateAudio();
+void gos_DestroyAudio();
+
 // Creates a resource to be played later
 //
 void __stdcall gosAudio_CreateResource( HGOSAUDIO* hgosaudio, enum gosAudio_ResourceType,  const char* file_name, gosAudio_Format* ga_wf = 0, void* data = 0, int size = 0, bool only2D = 0);
@@ -2247,6 +2256,8 @@ void __stdcall gos_RenderIndexedArray(HGOSBUFFER ib, HGOSBUFFER vb, HGOSVERTEXDE
 
 
 void __stdcall gos_SetRenderViewport(float x, float y, float w, float h);
+gosRenderer* gos_GetRenderer();
+
 // x, y, w, h
 vec4 __stdcall gos_GetRenderViewport(); //sebi
                                                                               //
@@ -2623,6 +2634,13 @@ struct gosVERTEX_FORMAT_RECORD {
 	int offset;
 	gosVERTEX_ATTRIB_TYPE type;
 };
+
+
+void gos_DestroyWindow();
+HGOSWINDOW gos_CreateWindow(int w, int h, int bpp, int display);
+HGOSWINDOW gos_GetWindow();
+bool gos_CreateRenderer(HGOSWINDOW win, int w, int h);
+void gos_DestroyRenderer();
 
 HGOSBUFFER __stdcall gos_CreateBuffer(gosBUFFER_TYPE type, gosBUFFER_USAGE usage, int element_size, uint32_t count, void* pdata);
 void __stdcall gos_DestroyBuffer(HGOSBUFFER buffer);

@@ -22,6 +22,8 @@
 #include "utils/timing.h"
 #include "gos_render.h"
 
+graphics::RenderWindowHandle g_win_h;
+
 class gosRenderer;
 class gosFont;
 
@@ -29,7 +31,7 @@ static const DWORD INVALID_TEXTURE_ID = 0;
 
 static gosRenderer* g_gos_renderer = NULL;
 
-gosRenderer* getGosRenderer() {
+gosRenderer* gos_GetRenderer() {
     return g_gos_renderer;
 }
 
@@ -2160,16 +2162,157 @@ void gosRenderer::flush()
 {
 }
 
-void gos_CreateRenderer(graphics::RenderContextHandle ctx_h, graphics::RenderWindowHandle win_h, int w, int h) {
 
-    g_gos_renderer = new gosRenderer(ctx_h, win_h, w, h);
+void gos_DestroyWindow() {
+    graphics::destroy_window(g_win_h);
+}
+
+HGOSWINDOW gos_CreateWindow(int w, int h, int bpp, int display) {
+    g_win_h = graphics::create_window("mc2", w, h, bpp, display);
+
+    Environment.displayIndex = display;
+    graphics::get_window_size(g_win_h, &Environment.screenWidth, &Environment.screenHeight);
+
+    return g_win_h;
+}
+
+HGOSWINDOW gos_GetWindow() {
+    return g_win_h;
+}
+
+static const char* getStringForType(GLenum type)
+{
+	switch (type)
+	{
+	case GL_DEBUG_TYPE_ERROR: return "DEBUG_TYPE_ERROR";
+	case GL_DEBUG_TYPE_DEPRECATED_BEHAVIOR: return "DEBUG_TYPE_DEPRECATED_BEHAVIOR";
+	case GL_DEBUG_TYPE_UNDEFINED_BEHAVIOR: return "DEBUG_TYPE_UNDEFINED_BEHAVIOR";
+	case GL_DEBUG_TYPE_PERFORMANCE: return "DEBUG_TYPE_PERFORMANCE";
+	case GL_DEBUG_TYPE_PORTABILITY: return "DEBUG_TYPE_PORTABILITY";
+	case GL_DEBUG_TYPE_MARKER: return "DEBUG_TYPE_MARKER";
+	case GL_DEBUG_TYPE_PUSH_GROUP: return "DEBUG_TYPE_PUSH_GROUP";
+	case GL_DEBUG_TYPE_POP_GROUP: return "DEBUG_TYPE_POP_GROUP";
+	case GL_DEBUG_TYPE_OTHER: return "DEBUG_TYPE_OTHER";
+	default: return "(undefined)";
+	}
+}
+
+static const char* getStringForSource(GLenum type)
+{
+	switch (type)
+	{
+	case GL_DEBUG_SOURCE_API: return "DEBUG_SOURCE_API";
+	case GL_DEBUG_SOURCE_SHADER_COMPILER: return "DEBUG_SOURCE_SHADER_COMPILER";
+	case GL_DEBUG_SOURCE_WINDOW_SYSTEM: return "DEBUG_SOURCE_WINDOW_SYSTEM";
+	case GL_DEBUG_SOURCE_THIRD_PARTY: return "DEBUG_SOURCE_THIRD_PARTY";
+	case GL_DEBUG_SOURCE_APPLICATION: return "DEBUG_SOURCE_APPLICATION";
+	case GL_DEBUG_SOURCE_OTHER: return "DEBUG_SOURCE_OTHER";
+	default: return "(undefined)";
+	}
+}
+
+static const char* getStringForSeverity(GLenum type)
+{
+	switch (type)
+	{
+	case GL_DEBUG_SEVERITY_HIGH: return "DEBUG_SEVERITY_HIGH";
+	case GL_DEBUG_SEVERITY_MEDIUM: return "DEBUG_SEVERITY_MEDIUM";
+	case GL_DEBUG_SEVERITY_LOW: return "DEBUG_SEVERITY_LOW";
+	case GL_DEBUG_SEVERITY_NOTIFICATION: return "DEBUG_SEVERITY_NOTIFICATION";
+	default: return "(undefined)";
+	}
+}
+//typedef void (GLAPIENTRY *GLDEBUGPROCARB)(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length, const GLchar* message, const void* userParam);
+#ifdef PLATFORM_WINDOWS
+static void GLAPIENTRY OpenGLDebugLog(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length, const GLchar* message, const void* userParam)
+#else
+static void GLAPIENTRY OpenGLDebugLog(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length, const GLchar* message, GLvoid* userParam)
+#endif
+{
+	if (severity != GL_DEBUG_SEVERITY_NOTIFICATION && severity != GL_DEBUG_SEVERITY_LOW)
+	{
+		printf("Type: %s; Source: %s; ID: %d; Severity : %s\n",
+			getStringForType(type),
+			getStringForSource(source),
+			id,
+			getStringForSeverity(severity)
+		);
+		printf("Message : %s\n", message);
+	}
+}
+
+
+bool gos_CreateRenderer(HGOSWINDOW win, int w, int h) {
+
+    gosASSERT(win);
+
+    graphics::RenderContextHandle ctx = graphics::init_render_context(win);
+    if(!ctx) 
+        return false;
+
+    graphics::make_current_context(ctx);
+
+    GLenum err = glewInit();
+    if (GLEW_OK != err)
+    {
+        SPEW(("GLEW", "Error: %s\n", glewGetErrorString(err)));
+        return false;
+    }
+
+	glEnable(GL_DEBUG_OUTPUT);
+	glEnable(GL_DEBUG_OUTPUT_SYNCHRONOUS);
+	//glPushDebugGroup(GL_DEBUG_SOURCE_APPLICATION, 76, 1, "My debug group");
+	glDebugMessageControlARB(GL_DONT_CARE, GL_DONT_CARE, GL_DONT_CARE, 0, NULL, GL_TRUE);
+	glDebugMessageCallbackARB((GLDEBUGPROC)&OpenGLDebugLog, NULL);
+
+    SPEW(("GRAPHICS", "Status: Using GLEW %s\n", glewGetString(GLEW_VERSION)));
+    //if ((!GLEW_ARB_vertex_program || !GLEW_ARB_fragment_program))
+    //{
+     //   SPEW(("GRAPHICS", "No shader program support\n"));
+      //  return 1;
+    //}
+
+    if(!glewIsSupported("GL_VERSION_3_0")) {
+        SPEW(("GRAPHICS", "Minimum required OpenGL version is 3.0\n"));
+        return false;
+    }
+
+    const char* glsl_version = (const char*)glGetString(GL_SHADING_LANGUAGE_VERSION);
+    SPEW(("GRAPHICS", "GLSL version supported: %s\n", glsl_version));
+
+    int glsl_maj = 0, glsl_min = 0;
+    sscanf(glsl_version, "%d.%d", &glsl_maj, &glsl_min);
+
+    if(glsl_maj < 3 || (glsl_maj==3 && glsl_min < 30) ) {
+        SPEW(("GRAPHICS", "Minimum required OpenGL version is 330 ES, current: %d.%d\n", glsl_maj, glsl_min));
+        return false;
+    }
+
+    char version[16] = {0};
+    snprintf(version, sizeof(version), "%d%d", glsl_maj, glsl_min);
+    SPEW(("GRAPHICS", "Using %s shader version\n", version));
+
+
+    g_gos_renderer = new gosRenderer(ctx, win, w, h);
     g_gos_renderer->init();
+
+    return true;
+}
+
+graphics::RenderContextHandle gos_GetRenderContext() {
+    gosASSERT(g_gos_renderer);
+    return g_gos_renderer->getRenderContextHandle();
 }
 
 void gos_DestroyRenderer() {
 
+    graphics::RenderContextHandle ctx = g_gos_renderer->getRenderContextHandle();
+
     g_gos_renderer->destroy();
     delete g_gos_renderer;
+
+    graphics::destroy_render_context(ctx);
+
 }
 
 void gos_RendererBeginFrame() {
@@ -2191,7 +2334,7 @@ void gos_RendererHandleEvents() {
 gosFont::~gosFont()
 {
     if(tex_id_ != INVALID_TEXTURE_ID)
-        getGosRenderer()->deleteTexture(tex_id_);
+        gos_GetRenderer()->deleteTexture(tex_id_);
 
     delete[] gi_.glyphs_;
     delete[] font_name_;
@@ -2226,7 +2369,7 @@ gosFont* gosFont::load(const char* fontFile) {
         STOP(("Failed to create font texture: %s\n", textureName));
     }
 
-    DWORD tex_id = getGosRenderer()->addTexture(ptex);
+    DWORD tex_id = gos_GetRenderer()->addTexture(ptex);
 
     gosFont* font = new gosFont();
     if(!gos_load_glyphs(glyphName, font->gi_)) {
@@ -2330,10 +2473,10 @@ void __stdcall gos_GetViewport( float* pViewportMulX, float* pViewportMulY, floa
 HGOSFONT3D __stdcall gos_LoadFont( const char* FontFile, DWORD StartLine/* = 0*/, int CharCount/* = 256*/, DWORD TextureHandle/*=0*/)
 {
 
-    gosFont* font = getGosRenderer()->findFont(FontFile);
+    gosFont* font = gos_GetRenderer()->findFont(FontFile);
     if(!font) {
         font = gosFont::load(FontFile);
-        getGosRenderer()->addFont(font);
+        gos_GetRenderer()->addFont(font);
     } else {
         font->addRef();
     }
@@ -2345,7 +2488,7 @@ void __stdcall gos_DeleteFont( HGOSFONT3D FontHandle )
 {
     gosASSERT(FontHandle);
     gosFont* font = FontHandle;
-    getGosRenderer()->deleteFont(font);
+    gos_GetRenderer()->deleteFont(font);
 }
 
 DWORD __stdcall gos_NewEmptyTexture( gos_TextureFormat Format, const char* Name, DWORD HeightWidth, DWORD Hints/*=0*/, gos_RebuildFunction pFunc/*=0*/, void *pInstance/*=0*/)

@@ -11,14 +11,17 @@ typedef RenderContext*   RenderContextHandle;
 
 void set_verbose(bool is_verbose);
 
-RenderWindowHandle  create_window           (const char* pwinname, int width, int height);
+RenderWindowHandle  create_window           (const char* pwinname, int width, int height, int wanted_bpp, int display_index);
 bool                resize_window           (RenderWindowHandle rw_handle, int width, int height);
 void                get_window_size         (RenderWindowHandle rw_handle, int* width, int* height);
+int                 get_window_bpp          (RenderWindowHandle rw_handle);
 // may be different than window size (e.g. when switching to fullscreen)
 void                get_drawable_size       (RenderWindowHandle rw_handle, int* width, int* height);
 void                swap_window             (RenderWindowHandle h);
 void                destroy_window          (RenderWindowHandle rw_handle);
+void                grab_window             (RenderWindowHandle h, bool b_grab);
 bool                set_window_fullscreen   (RenderWindowHandle rw_handle, bool fullscreen);
+bool                is_window_fullscreen    (RenderWindowHandle rw_handle);
 bool                is_mode_supported       (int width, int height, int bpp);
 int                 get_window_display_index(RenderContextHandle ctx_h);
 bool                get_desktop_display_mode(int display_index, int* width, int* height, int* bpp);

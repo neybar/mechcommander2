@@ -246,14 +246,16 @@ void MC2Movie::destroy_stuff(struct MoviePlayerImpl* pimpl) {
 // If just move, its awfully fast.
 void MC2Movie::setRect (RECT vRect)
 {
+#if 0
 	if (((vRect.right - vRect.left) != (MC2Rect.right - MC2Rect.left)) ||
 		((vRect.bottom - vRect.top) != (MC2Rect.bottom - MC2Rect.top)))
 	{
 		//Size changed.  STOP for now to tell people this is bad!
 		// May be impossible to do when MC2 is running because MC2 counts on previous frame's contents not changing
-		STOP(("Tried to change MC2 Movie Rect size to different one from starting value"));
+		//STOP(("Tried to change MC2 Movie Rect size to different one from starting value"));
 	}
 	else
+#endif
 	{
 		//Otherwise, just update the MC2Rect.
 		MC2Rect = vRect;

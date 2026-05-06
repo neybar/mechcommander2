@@ -386,13 +386,13 @@ void OptionsGraphics::init(long xOffset, long yOffset)
 	resolutionList.move( xOffset, yOffset );
 	resolutionList.ListBox().setOrange( true );
 
-    const int num_modes = gos_GetNumDisplayModes(0);
+    const int displayIndex = gos_GetWindowDisplayIndex();
+    const int num_modes = gos_GetNumDisplayModes(displayIndex);
     gosASSERT(!resolutionModes && !resolutionModesStr);
     resolutionModes = new ResModes[num_modes];
     resolutionModesStr = new char*[num_modes];
     numResolutionModes = num_modes;
 
-    const int displayIndex = gos_GetWindowDisplayIndex();
 
 	for ( int i = 0; i < num_modes; i++ ) {
         gos_GetDisplayModeByIndex(displayIndex, i, &resolutionModes[i].xRes, &resolutionModes[i].yRes, &resolutionModes[i].bitDepth);

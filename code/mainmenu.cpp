@@ -449,6 +449,13 @@ void MainMenu::update()
 			introMovie->stop();
 		}
 
+        //sebi: update movie rect because window size can change
+        RECT movieRect;
+        movieRect.top = 0;
+        movieRect.left = 0;
+        movieRect.right = Environment.screenWidth;
+        movieRect.bottom = Environment.screenHeight;
+        introMovie->setRect(movieRect);
 		bool result = introMovie->update();
 		if (result)
 		{
