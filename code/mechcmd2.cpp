@@ -1335,7 +1335,7 @@ void __stdcall InitializeGameEngine()
                 
 				result = optsFile->readIdLong("ResolutionY",resolutionY);
 				if (result != NO_ERR)
-					resolutionX = 600;
+					resolutionY = 600;
 	
 				result = optsFile->readIdBoolean("FullScreen",fullScreen);
 				if (result != NO_ERR)
