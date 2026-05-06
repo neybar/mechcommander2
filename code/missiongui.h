@@ -160,7 +160,10 @@ public:
 		bool						bPausedWithoutMenu;
 		bool						bEnergyWeapons;
 		bool						bDrawHotKeys;
-		long						resolution;
+        //sebi: make separate X, Y to account for resolution 
+        //change where only one dimension changes
+		long						resolutionX;
+		long						resolutionY;
 		
 		//-----------------------------------------------
 		// Attila (Strategic Commander) Data
