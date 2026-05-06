@@ -1410,10 +1410,13 @@ void MC_TextureManager::renderLists (void)
 	}
 	
     // sebi: split in 2 parts, first draw objects which have alpha test off, then with alpha test on
+    // FIXME: becase some objects are drawn with alphs blend + depth write rather then alpha test, if order is wrong
+    // then objects which are behind may not be visible: e.g. hangar in first mission - under some angles "window" mesh is 
+    // drawn after hangar shell and it is failing depth test
     for(int states = 0; states < 2; ++states) 
     {   
         gos_SetRenderState( gos_State_AlphaTest, states);
-        for (int i=0;i<nextAvailableVertexNode;i++)
+        for (int i=nextAvailableVertexNode-1;i>=0;i--)
         {
             if (!(masterVertexNodes[i].flags & MC2_ISTERRAIN) &&
                     !(masterVertexNodes[i].flags & MC2_ISSHADOWS) &&
