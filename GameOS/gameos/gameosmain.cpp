@@ -188,6 +188,8 @@ int main(int argc, char** argv)
 
 		uint64_t start_tick = timing::gettickcount();
 
+        process_events();
+
         if(gos_RenderGetEnableDebugDrawCalls()) {
             gos_RenderUpdateDebugInput();
         } else {
@@ -196,8 +198,6 @@ int main(int argc, char** argv)
 
         win = gos_GetWindow();
         ctx = gos_GetRenderContext();
-
-        process_events();
 
 		gos_RendererHandleEvents();
         gos_UpdateAudio();
