@@ -28,7 +28,7 @@ bool gos_save_glyphs(const char* glyphFile, const gosGlyphInfo& gi)
     FILE* glyph_info = fopen(glyphFile, "wb");
     if(!glyph_info) {
         int last_err = errno;
-        printf("fopen: %s\n", strerror(errno));
+        printf("fopen: %s\n", strerror(last_err));
         return false;
     }
 
@@ -123,7 +123,6 @@ int main(int argc, char** argv)
 
     int max_advance = 0;
 	const SDL_Color fg = { 255, 255, 255, 255 };
-	const SDL_Color bg = { 0, 0, 0, 0};
 
     for(int i=0;i<NUM_GLYPHS;++i) {
 
@@ -169,7 +168,6 @@ int main(int argc, char** argv)
             0xFF000000);
 
     const Uint32 black = SDL_MapRGBA(fontTexture->format, 0,0,0, 0);
-    const Uint32 white = SDL_MapRGBA(fontTexture->format, 255,255,255, 255);
 
     SDL_FillRect(fontTexture, 0, black);
 
