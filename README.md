@@ -14,7 +14,7 @@ as russia conducts war in Ukraine I have limited time to support this project un
 I consider this project finished for now, there is a lot more to do for someone who wants to improve the game, but all functionality (except networking) is implemented and I've passed the game on my Linux box. Also found original game bugs and crashes are fixed.
 
 ## AI policy: 
-This project has 0% LLM code and AIs (such as Claude, ChatGPT and other LLMs) are not welcome here. I have limited time for it and even less time and desire to dig through AI-generated stuff. This is a personal hobby project which started because I love retro games and coding - not using LLMs.  
+This project has 0% LLM code and AIs (such as Claude, ChatGPT and other LLMs) are not welcome here. I have limited time for it and even less time and desire to dig through AI-generated stuff. This is a personal hobby project which started because I love retro games and coding - not using LLMs. It is ok if you use LLMs to help you figure out an issue or help with the code, but you need to understand what you are doing, not just throwing promts at it until it "works".
 
 ## TODO: 
 * fix remaining memory leaks (finish implementation of memory heaps)
