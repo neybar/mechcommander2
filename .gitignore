@@ -1,6 +1,83 @@
-build/
+.ccls-cache/
+tags
+CMakeCache.txt
+out/
+bin/
+build*/
+.clangd/
+*.exe
+*.cmake
+Makefile
+CMakeFiles/
+.vscode/
+*.a
+*.swp
+*.dll
+*.exe
+*.cfg
+*.tga
+Editor
+data
+unpacked_data
+unpacked_data--
+data-orig
+1033
+assets
+ABLT
+Tools
+.codelite
+*.session
+*.log
+*.lib
+*.LIB
+*.so
+*.a
+viewer
+mc2
+text_tool
+!text_tool/
+.ycm_extra_conf.py
+.ycm_extra_conf.pyc
+*.ico
+*.rc
+vidcard.csv
+*.s14
+.gdb_history
+*.old
+longpath.dbg
+tmp/
+dump/
+test_code/
+test_sound/
+# Source repository should not track built resources
+*.fst
+
+*.h~
+*.hpp~
+*.c~
+*.cpp~
+
+*~
+
+*.pdb
+*.ilk
+*.exp
+*.obj
+*.tlog
+
+sniff.dat
+
+
+# Coverity
+cov-int/
+
+# CMake Tools VS Code extension
+CMakeToolsMeta.in.txt
+CMakeToolsMeta.txt
+compile_commands.json
+
+# --- mc2-port additions (ours; kept separable from upstream's list above) ---
 .DS_Store
-# user-provided game assets never enter git (see CLAUDE.md)
-assets/
-data/
 .claude/settings.local.json
+# user-provided game assets never enter git (see CLAUDE.md);
+# upstream's list above already ignores `data` and `assets`

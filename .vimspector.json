@@ -1,0 +1,68 @@
+{
+    "configurations": {
+        "simple-config": {
+            "default": true,
+            "adapter": "vscode-cpptools",
+            "configuration": {
+                "stuff": "see https://code.visualstudio.com/docs/cpp/launch-json-reference for docs",
+
+                "request" : "launch",
+                "type": "cppdbg",
+                "protocol": "auto",
+                "stopAtEntry": false,
+                "console": "integratedTerminal",
+                "program": "${workspaceRoot}/build/mc2",
+                "cwd": "${workspaceRoot}",
+                "MIMode": "gdb",
+                "launchCompleteCommand": "exec-run",
+                "setupCommands": [
+                    {
+                        "description": "Enable pretty-printing for gdb",
+                        "text": "-enable-pretty-printing",
+                        "ignoreFailures": true
+                    }
+                ],
+                "env": {
+                    "LD_LIBRARY_PATH" : ""
+                },
+                "args": ["-mission", "mc2_01" ]
+
+            }
+        },
+        "simple-noargs":{
+            "extends": "simple-config",
+            "configuration": {
+                "args": []
+            }
+        },
+        "text_tool2": {
+            "default": false,
+            "adapter": "vscode-cpptools",
+            "configuration": {
+                "stuff": "see https://code.visualstudio.com/docs/cpp/launch-json-reference for docs",
+
+                "request" : "launch",
+                "type": "cppdbg",
+                "protocol": "auto",
+                "stopAtEntry": false,
+                "console": "integratedTerminal",
+                "program": "${workspaceRoot}/build/out/tools/text_tool2/text_tool2",
+                "cwd": "${workspaceRoot}",
+                "MIMode": "gdb",
+                "launchCompleteCommand": "exec-run",
+                "setupCommands": [
+                    {
+                        "description": "Enable pretty-printing for gdb",
+                        "text": "-enable-pretty-printing",
+                        "ignoreFailures": true
+                    }
+                ],
+                "env": {
+                    "LD_LIBRARY_PATH" : ""
+                },
+                "args": ["./srcdata/fonts/Roboto-Medium.ttf", "24", "./data/fonts/roboto_medium_24.slug" ]
+
+            }
+        }
+    }
+}
