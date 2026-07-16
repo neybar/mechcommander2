@@ -1,0 +1,5 @@
+build/
+.DS_Store
+# user-provided game assets never enter git (see CLAUDE.md)
+assets/
+data/
