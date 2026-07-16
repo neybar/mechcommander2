@@ -23,7 +23,20 @@ https://github.com/alariq/mc2
 Would mean redoing years of DirectX-removal and 64-bit work that alariq
 already finished. Kept as a reference for anything the port changed
 (https://github.com/SimonDarksideJ/MechCommander2-Source,
-https://archive.org/details/mech-commander-2-source-code).
+https://archive.org/details/mech-commander-2-source-code — pristine mirror;
+targets the Feb 2006 DirectX SDK, D3D8, VS-era build projects, XNA solution).
+Caution: that GitHub mirror is labeled "MIT", which the uploader had no
+authority to grant — the real terms remain Microsoft's shared-source license.
+
+### Omnitech (Echelon9/mechcommander2-open) — not a base; modding reference
+Moddability-focused fork of the original source: VS2010, Windows-only, still
+DirectX, 33 commits on GitHub (real activity happened on forums/ModDB).
+Value to us: its loadable-campaign system (MC1 campaign remake, Carver V
+variants) is the de facto community standard for custom campaigns — study it
+when designing our mod support, ideally stay format-compatible. Cautionary
+tale: Omnitech baked difficulty increases into the fork itself, making it
+rough on casual players — reinforces our rule that balance/difficulty belongs
+in data/mods, never hardcoded in the engine.
 
 ### Alexbeav Restoration Project — rejected as base, valuable as reference
 Fork of alariq/mc2 focused on Windows 11; no macOS interest. But it solved a
@@ -53,7 +66,16 @@ Chosen over the alternatives:
   so there is no D3D layer left to translate. It would only apply if we started
   from the original Microsoft source, which we rejected for the much larger
   64-bit/build-system burden (see evaluation above). Revisit only if the alariq
-  base proves unworkable.
+  base proves unworkable. Framing: any port must solve both (a) the renderer API
+  and (b) 64-bit/Win32/build modernization. The DXVK chain solves only (a);
+  Generals could use it because its community had already spent years on (b)
+  (TheSuperHackers → Fighter19 → GeneralsX). For MC2, alariq's port *is* that
+  community stack — and it solved (a) by deleting D3D, closing the DXVK door.
+- *Zink (GL-over-Vulkan) on MoltenVK:* run alariq's OpenGL renderer unmodified
+  through Mesa's Zink → MoltenVK → Metal. Experimental on macOS and adds a
+  fragile layer, but it's a potential zero-rewrite bootstrap for M1 (playable
+  on Mac before the Vulkan backend exists) and cheap insurance if macOS's
+  deprecated GL 4.1 can't run the port's shaders. Worth a one-day spike in M1.
 
 Bootstrap sequence: get the existing OpenGL renderer compiling on macOS first
 (GL 4.1 core caveats: the port may use GL features/extensions macOS lacks —
@@ -98,3 +120,8 @@ Linux/Windows. ARM64 macOS adds:
   the existing shaders with minimal translation?
 - OQ-5: Audio backend state — how incomplete is upstream's sound system, and is
   SDL_mixer/OpenAL the fix?
+- OQ-6: Is Omnitech's custom-campaign format documented anywhere, and can our
+  mod support load Omnitech-authored campaigns (MC1 remake, etc.)?
+- OQ-7: Exact license text lineage — Shared Source Limited Permissive vs Ms-PL:
+  which text actually governs the 2006 release? Pin the authoritative copy in
+  the repo before going public.
