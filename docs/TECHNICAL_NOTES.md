@@ -46,6 +46,14 @@ Chosen over the alternatives:
 - *Vulkan + MoltenVK:* one modern API for Linux/Windows, translated to Metal on
   Mac — the same model dxvk uses for D3D→Vulkan. MoltenVK is mature (all Vulkan
   games on Mac use it via VKD3D/DXVK stacks).
+- *DXVK chain (D3D8 → DXVK → Vulkan → MoltenVK → Metal):* the approach the
+  inspiring [Generals Mac port](https://github.com/ammaarreshi/Generals-Mac-iOS-iPad)
+  used — keep the original DirectX renderer and translate at runtime. Not viable
+  on our chosen base: alariq/mc2 already **removed** DirectX in favor of OpenGL,
+  so there is no D3D layer left to translate. It would only apply if we started
+  from the original Microsoft source, which we rejected for the much larger
+  64-bit/build-system burden (see evaluation above). Revisit only if the alariq
+  base proves unworkable.
 
 Bootstrap sequence: get the existing OpenGL renderer compiling on macOS first
 (GL 4.1 core caveats: the port may use GL features/extensions macOS lacks —

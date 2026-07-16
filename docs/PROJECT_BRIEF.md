@@ -11,6 +11,17 @@ Vulkan/Metal rendering path**, building on that lineage.
 
 Background on the game: https://www.sarna.net/wiki/MechCommander_2
 
+## Inspiration
+
+[Generals-Mac-iOS-iPad](https://github.com/ammaarreshi/Generals-Mac-iOS-iPad) —
+a native Apple Silicon port of C&C Generals: Zero Hour, built through human–AI
+collaboration (Claude Code doing the C++ engineering, a human directing by
+symptoms). It proves the model this project uses: build on the community
+lineage, keep assets user-supplied, translate the renderer to Metal via the
+Vulkan ecosystem, and document the bug hunts in an engineering log. We adopt
+its working style but not its iOS/iPad scope — this project targets desktop
+platforms only.
+
 ## Why
 
 - The maintainer (jalance) wants to play MC2 natively on their Mac.

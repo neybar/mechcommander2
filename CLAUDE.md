@@ -46,6 +46,10 @@ vendor the base codebase and get it compiling on macOS ARM64 (see ROADMAP).
   and 32-bit-era Windows idioms — treat alignment, `long` size, and pointer
   truncation bugs as expected hazards on ARM64.
 - Local git repo, no remote yet. Commit in small, buildable increments.
+- Keep an engineering log at `docs/ENGINEERING_LOG.md` (practice borrowed from
+  the Generals Mac port that inspired this project): one entry per significant
+  bug hunt or porting battle — symptom, cause, fix. Append entries as part of
+  the work, not after the fact.
 - Prefer minimal diffs against the vendored base code; keep our changes
   separable from upstream's so provenance stays clear.
 
