@@ -55,6 +55,12 @@ Next session:
   and 32-bit-era Windows idioms — treat alignment, `long` size, and pointer
   truncation bugs as expected hazards on ARM64.
 - Local git repo, no remote yet. Commit in small, buildable increments.
+- **Work on feature branches, not main** (`fix/...`, `feat/...`, `m1/...`).
+  Merge to main only after the user has seen the result working (or reviewed
+  the diff for non-runnable changes). Docs-only commits may go straight to
+  main. Never rebase/amend anything already merged to main.
+- No remote means no backup — worth revisiting (private GitHub remote or a
+  bare repo on another disk).
 - Keep an engineering log at `docs/ENGINEERING_LOG.md` (practice borrowed from
   the Generals Mac port that inspired this project): one entry per significant
   bug hunt or porting battle — symptom, cause, fix. Append entries as part of
