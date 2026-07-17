@@ -122,6 +122,8 @@ Linux/Windows. ARM64 macOS adds:
   SDL_mixer/OpenAL the fix?
 - OQ-6: Is Omnitech's custom-campaign format documented anywhere, and can our
   mod support load Omnitech-authored campaigns (MC1 remake, etc.)?
-- OQ-7: Exact license text lineage — Shared Source Limited Permissive vs Ms-PL:
-  which text actually governs the 2006 release? Pin the authoritative copy in
-  the repo before going public.
+- ~~OQ-7~~ RESOLVED (2026-07-16): EULA.txt in-repo is authoritative (Shared
+  Source Limited Permissive License). §2(A) grants reproduction/derivatives/
+  distribution; §3(A) restricts Art Assets to non-commercial distribution;
+  §3(E) requires shipping the license with source. GitHub publishing is
+  compliant; project stays non-commercial.
