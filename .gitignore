@@ -79,5 +79,7 @@ compile_commands.json
 # --- mc2-port additions (ours; kept separable from upstream's list above) ---
 .DS_Store
 .claude/settings.local.json
+# clangd's index cache
+.cache/
 # user-provided game assets never enter git (see CLAUDE.md);
 # upstream's list above already ignores `data` and `assets`
