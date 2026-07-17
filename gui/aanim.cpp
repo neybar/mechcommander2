@@ -168,6 +168,14 @@ void	aAnimation::end()
 	currentTime = -1.f;
 }
 
+void	aAnimation::skipToEnd()
+{
+	// jump past the last keyframe so isDone() reports true and
+	// getColor/getXDelta etc. return their final values
+	direction = 1.0;
+	currentTime = ( infos && infoCount ) ? infos[infoCount-1].time + 0.001f : 0.f;
+}
+
 void	aAnimation::update()
 {
 	if ( currentTime != -1.f )

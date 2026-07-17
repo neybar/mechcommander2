@@ -6,6 +6,35 @@ Newest entries at the top. Practice borrowed from the
 
 ---
 
+## 2026-07-17 — ESC-skipping the intro no longer strands the menu on black
+
+**Menu drawn over solid black for ~8 s after ESC-skipping the intro movie**
+(the 2026-07-16 UPDATE item) → last session's hypothesis (skip vs. finish
+taking different state paths) was wrong: both movie endings converge on the
+same `delete introMovie` in `MainMenu::update`. The real mechanism is a
+**held-key leak plus a reveal that never actually skips**:
+
+1. `userInput->getKeyDown` is level-triggered (PRESSED *or* HELD). A human ESC
+   press spans several frames; frame N stops/deletes the movie, and on frame
+   N+1 the *same key press* falls into the splash-reveal branch and sets
+   `introOver = true` — the flag that unhides the menu buttons.
+2. But `introOver` never touched the "rectfade" animation, and
+   `MainMenu::render` draws `intro.render()` unconditionally — so the reveal's
+   opaque-black hold (t=0–8 in `mcl_splashscreenintro.fit`) kept covering the
+   background while the menu text/buttons drew on top of it. Hence: menu on
+   black until t=8, background fades in at t=8–11.
+   Letting the movie finish never sets `introOver`, so the menu stays hidden
+   until the reveal completes — that's why only the skip path looked broken.
+
+Fix: added `aAnimation::skipToEnd()` (jump past the last keyframe so
+`isDone()` is true and color/position report final values — the rectfade's
+final color is transparent) + `aAnimObject` passthrough. `MainMenu::update`
+now fast-forwards the splash animObjects both when the movie is skipped and
+when ESC is pressed during the reveal, so any skip cuts straight to the menu
+with the background visible. Natural completion still plays the designed
+fade. Anim clocks here advance by `frameLength` per `update()` call, not
+wall-clock — worth remembering for future sequencing bugs.
+
 ## 2026-07-16 — M1: menu fully interactive; exit crash and "black background" resolved
 
 **Mouse could not move past the middle of the screen** → SDL mouse events are

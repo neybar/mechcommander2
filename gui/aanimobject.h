@@ -38,6 +38,7 @@ class aAnimObject: public aObject
 		void begin() { animInfo.begin(); }
 		void end();
 		void reverseBegin() { animInfo.reverseBegin(); }
+		void skipToEnd() { animInfo.skipToEnd(); }
 
 		bool isDone() { return animInfo.isDone(); }
 

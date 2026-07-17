@@ -447,6 +447,12 @@ void MainMenu::update()
 		if (userInput->getKeyDown(KEY_SPACE) || userInput->getKeyDown(KEY_ESCAPE) || userInput->getKeyDown(KEY_LMOUSE))
 		{
 			introMovie->stop();
+
+			// Skipping the movie also skips the splash reveal: its "rectfade"
+			// animation holds an opaque black rect for ~8s before fading, so
+			// without this the menu sits on a black screen after the skip.
+			for ( int i = 0; i < intro.animObjectsCount; i++ )
+				intro.animObjects[i].skipToEnd();
 		}
 
         //sebi: update movie rect because window size can change
@@ -693,6 +699,10 @@ void MainMenu::update()
 					userInput->mouseOn();
 					soundSystem->playDigitalSample( LOG_MAINMENUBUTTON );
 
+					// end the black-hold rectfade too, so the background is
+					// visible immediately instead of the menu drawing on black
+					for ( int i = 0; i < intro.animObjectsCount; i++ )
+						intro.animObjects[i].skipToEnd();
 				}
 				else if ( !introOver )
 					return;
