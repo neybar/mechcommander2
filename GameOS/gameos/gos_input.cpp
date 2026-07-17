@@ -50,11 +50,27 @@ static int sdl2idx(int button) {
 void handleMouseMotion(const SDL_Event* event) {
     assert(event);
 
+    // SDL reports mouse coordinates in window points, but the rest of the
+    // engine (viewport, gos_GetMouseInfo normalization) works in drawable
+    // pixels; on HiDPI/Retina displays these differ by the scale factor,
+    // which clamped the cursor to the top-left half of the screen
+    float sx = 1.0f, sy = 1.0f;
+    SDL_Window* wnd = SDL_GetWindowFromID(event->motion.windowID);
+    if (wnd) {
+        int ww = 0, wh = 0, dw = 0, dh = 0;
+        SDL_GetWindowSize(wnd, &ww, &wh);
+        SDL_GL_GetDrawableSize(wnd, &dw, &dh);
+        if (ww > 0 && wh > 0) {
+            sx = (float)dw / (float)ww;
+            sy = (float)dh / (float)wh;
+        }
+    }
+
     MouseInfo* mi = &g_mouse_info;
-    mi->x_ = (float)event->motion.x;
-    mi->y_ = (float)event->motion.y;
-    mi->rel_x_ = (float)event->motion.xrel;
-    mi->rel_y_ = (float)event->motion.yrel;
+    mi->x_ = (float)event->motion.x * sx;
+    mi->y_ = (float)event->motion.y * sy;
+    mi->rel_x_ = (float)event->motion.xrel * sx;
+    mi->rel_y_ = (float)event->motion.yrel * sy;
 }
 
 void handleMouseButton(const SDL_Event* event) {
