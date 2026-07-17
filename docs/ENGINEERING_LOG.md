@@ -6,6 +6,43 @@ Newest entries at the top. Practice borrowed from the
 
 ---
 
+## 2026-07-17 — Windowed mode & resolution switching work; the cursor-cage hunt
+
+Session goal: graphics testing (windowed mode, resolution changes). Windowed
+mode = `b FullScreen = FALSE` in options.cfg (port uses SDL desktop-fullscreen
+otherwise; window is drag-resizable). Resolution dropdown (Options→Graphics)
+is the port's SDL-mode enumeration; changes apply at next mission load, menus
+stay 800x600 by design. Fixes, in escalating order of difficulty:
+
+**Dropdown claimed current res was 5120x2880** → prefs didn't match any SDL
+mode (legacy retail options.cfg stores BitDepth as a 0/1 index, not 16/32) and
+the no-match fallback picked item 0 = the largest mode. Fix: normalize legacy
+BitDepth on load; fall back exact → size-only → closest-area, never item 0.
+
+**Every resolution listed 2-3x** → SDL enumerates one mode per refresh rate;
+dropdown shows only WxHxD. Deduped at the dropdown.
+
+**Close button dead, ctrl-c dead** → `SDL_WINDOWEVENT_CLOSE` was never
+handled, and the focus-lost gate in process_events discarded *all* events
+while unfocused — including the SDL_QUIT synthesized from SIGINT. Quit
+events now bypass the gate.
+
+**THE CAGE: in-game cursor confined to a menu-sized box after launching a
+mission through the menus** (direct `-mission` launches unaffected). Wrong
+theories first: stale `Environment.drawable*` (fixed anyway — resize events
+were discarded; real bug, wasn't this one), normalized-vs-points confusion in
+`gos_SetMousePosition` (also real, also fixed, also not this). The
+breakthrough was `MC2_DEBUG_INPUT=1` (new, kept): per-second dump of the
+whole coordinate chain showed every engine value consistent, but the *OS
+cursor's global position* pinned inside [239-1079]x[94-784] — an 800x600
+box at the new window's origin. Cause: `SDL_SetWindowGrab` was enabled while
+the 800x600 menu window existed; SDL/macOS confinement rect never re-applied
+across the window's resize to mission resolution. Fix: grab only in
+fullscreen (windowed grab also makes window chrome unreachable — upstream
+had this condition commented out), re-apply capture on resize events.
+Lesson: when input coordinates look right but movement is bounded, suspect
+OS-level confinement, not arithmetic — and instrument before theorizing.
+
 ## 2026-07-17 — M1 playthrough observations triaged (user played Training 1+2 to completion)
 
 User-verified in play: mission load, unit orders, pathing, combat (targeted
