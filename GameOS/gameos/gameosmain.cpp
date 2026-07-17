@@ -7,8 +7,6 @@
 #include "gos_input.h"
 
 #include "utils/camera.h"
-#include "utils/shader_builder.h"
-#include "utils/gl_utils.h"
 #include "utils/timing.h"
 
 #include <signal.h>
@@ -109,12 +107,9 @@ static void process_events( void ) {
                     // gos_SetScreenMode requested (macOS clamps oversized
                     // windows, Cocoa resizes asynchronously, the user can
                     // drag-resize) — refresh the drawable size here or mouse
-                    // normalization and glViewport keep using the stale one
-                    SDL_Window* wnd = SDL_GetWindowFromID(event.window.windowID);
-                    if (wnd) {
-                        SDL_GL_GetDrawableSize(wnd,
-                            &Environment.drawableWidth, &Environment.drawableHeight);
-                    }
+                    // normalization and the viewport keep using the stale one
+                    graphics::get_drawable_size(gos_GetWindow(),
+                        &Environment.drawableWidth, &Environment.drawableHeight);
 
                     // re-apply the mouse capture so a fullscreen grab's
                     // confinement rect tracks the new window size
@@ -156,31 +151,13 @@ static void process_events( void ) {
     input::updateKeyboardState();
 }
 
-extern bool g_disable_quads;
-
 static void draw_screen( void )
 {
-    g_disable_quads = false;
-    glClear( GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT );
-    glCullFace(GL_FRONT);
-    //CHECK_GL_ERROR;
-    
-	const int viewport_w = Environment.drawableWidth;
-	const int viewport_h = Environment.drawableHeight;
-    glViewport(0, 0, viewport_w, viewport_h);
-
-    CHECK_GL_ERROR;
-
-    // TODO: reset all states to sane defaults!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-    glDepthMask(GL_TRUE);
-    glClear( GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT );
-
+    // per-frame graphics-API setup (clear, viewport, state reset) lives in
+    // the renderer's begin/end frame — no GL calls in the main loop
     gos_RendererBeginFrame();
     Environment.UpdateRenderers();
     gos_RendererEndFrame();
-
-    glUseProgram(0);
-    //CHECK_GL_ERROR;
 }
 
 extern float frameRate;
