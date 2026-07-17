@@ -1,13 +1,15 @@
 // Vulkan (MoltenVK on macOS) implementation of the gos_render window/context
-// API. M2 scaffold: opens an SDL Vulkan window, builds a swapchain, and
-// clears/presents each frame. Drawing comes later; see docs/RENDERER_AUDIT.md.
+// API. Owns the device, swapchain, depth buffer, render pass and the frame
+// lifecycle: vk_begin_frame() opens a clearing render pass on the draw
+// command buffer; swap_window() closes it, submits (uploads first) and
+// presents. Drawing itself lives in rendervk/gameos_graphics.cpp.
 
 #include "gameos.hpp"
 #include "gos_render.h"
+#include "vk_internal.h"
 
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_vulkan.h>
-#include <vulkan/vulkan.h>
 
 #include <cassert>
 #include <cstdio>
@@ -47,18 +49,47 @@ struct RenderContext {
     VkSwapchainKHR   swapchain_;
     VkFormat         swapchain_format_;
     VkExtent2D       swapchain_extent_;
-    std::vector<VkImage> swapchain_images_;
+    std::vector<VkImage>       swapchain_images_;
+    std::vector<VkImageView>   swapchain_views_;
+    std::vector<VkFramebuffer> framebuffers_;
+
+    VkImage          depth_image_;
+    VkDeviceMemory   depth_memory_;
+    VkImageView      depth_view_;
+
+    VkRenderPass     render_pass_;
 
     VkCommandPool    cmd_pool_;
-    VkCommandBuffer  cmd_buf_;
+    VkCommandBuffer  draw_cb_;
+    VkCommandBuffer  upload_cb_;
     VkSemaphore      sem_image_available_;
     VkSemaphore      sem_render_done_;
     VkFence          frame_fence_;
 
+    uint32_t         cur_image_;
     bool             swapchain_dirty_;
+
+    VkFrame          frame_; // view handed to gameos_graphics
 };
 
 static RenderContext* g_ctx = NULL; // single window/device, same as GL path
+
+VkFrame* vk_frame()
+{
+    return g_ctx ? &g_ctx->frame_ : NULL;
+}
+
+uint32_t vk_find_memory_type(uint32_t type_bits, VkMemoryPropertyFlags props)
+{
+    VkPhysicalDeviceMemoryProperties mp;
+    vkGetPhysicalDeviceMemoryProperties(g_ctx->phys_device_, &mp);
+    for(uint32_t i = 0; i < mp.memoryTypeCount; ++i) {
+        if((type_bits & (1u << i)) && (mp.memoryTypes[i].propertyFlags & props) == props)
+            return i;
+    }
+    fprintf(stderr, "[VK] no suitable memory type (bits 0x%x props 0x%x)\n", type_bits, props);
+    abort();
+}
 
 void set_verbose(bool is_verbose) { g_verbose = is_verbose; }
 
@@ -208,6 +239,24 @@ bool get_display_mode_by_index(int display_index, int mode_index, int* width, in
 
 ////////////////////////////////////////////////////////////////////////////////
 
+static void destroy_swapchain_views(RenderContext* ctx)
+{
+    for(size_t i = 0; i < ctx->framebuffers_.size(); ++i)
+        vkDestroyFramebuffer(ctx->device_, ctx->framebuffers_[i], NULL);
+    ctx->framebuffers_.clear();
+    for(size_t i = 0; i < ctx->swapchain_views_.size(); ++i)
+        vkDestroyImageView(ctx->device_, ctx->swapchain_views_[i], NULL);
+    ctx->swapchain_views_.clear();
+    if(ctx->depth_view_) {
+        vkDestroyImageView(ctx->device_, ctx->depth_view_, NULL);
+        vkDestroyImage(ctx->device_, ctx->depth_image_, NULL);
+        vkFreeMemory(ctx->device_, ctx->depth_memory_, NULL);
+        ctx->depth_view_ = VK_NULL_HANDLE;
+        ctx->depth_image_ = VK_NULL_HANDLE;
+        ctx->depth_memory_ = VK_NULL_HANDLE;
+    }
+}
+
 static void create_swapchain(RenderContext* ctx)
 {
     VkSurfaceCapabilitiesKHR caps;
@@ -237,6 +286,7 @@ static void create_swapchain(RenderContext* ctx)
     if(caps.maxImageCount > 0 && image_count > caps.maxImageCount)
         image_count = caps.maxImageCount;
 
+    destroy_swapchain_views(ctx);
     VkSwapchainKHR old_swapchain = ctx->swapchain_;
 
     VkSwapchainCreateInfoKHR sci = {};
@@ -267,6 +317,68 @@ static void create_swapchain(RenderContext* ctx)
     ctx->swapchain_images_.resize(nimages);
     vkGetSwapchainImagesKHR(ctx->device_, ctx->swapchain_, &nimages, ctx->swapchain_images_.data());
 
+    // depth buffer
+    VkImageCreateInfo di = {};
+    di.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    di.imageType = VK_IMAGE_TYPE_2D;
+    di.format = VK_FORMAT_D32_SFLOAT;
+    di.extent.width = extent.width;
+    di.extent.height = extent.height;
+    di.extent.depth = 1;
+    di.mipLevels = 1;
+    di.arrayLayers = 1;
+    di.samples = VK_SAMPLE_COUNT_1_BIT;
+    di.tiling = VK_IMAGE_TILING_OPTIMAL;
+    di.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+    di.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    VK_CHECK(vkCreateImage(ctx->device_, &di, NULL, &ctx->depth_image_));
+
+    VkMemoryRequirements mreq;
+    vkGetImageMemoryRequirements(ctx->device_, ctx->depth_image_, &mreq);
+    VkMemoryAllocateInfo mai = {};
+    mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    mai.allocationSize = mreq.size;
+    mai.memoryTypeIndex = vk_find_memory_type(mreq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    VK_CHECK(vkAllocateMemory(ctx->device_, &mai, NULL, &ctx->depth_memory_));
+    VK_CHECK(vkBindImageMemory(ctx->device_, ctx->depth_image_, ctx->depth_memory_, 0));
+
+    VkImageViewCreateInfo dvi = {};
+    dvi.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    dvi.image = ctx->depth_image_;
+    dvi.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    dvi.format = VK_FORMAT_D32_SFLOAT;
+    dvi.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+    dvi.subresourceRange.levelCount = 1;
+    dvi.subresourceRange.layerCount = 1;
+    VK_CHECK(vkCreateImageView(ctx->device_, &dvi, NULL, &ctx->depth_view_));
+
+    // color views + framebuffers
+    ctx->swapchain_views_.resize(nimages);
+    ctx->framebuffers_.resize(nimages);
+    for(uint32_t i = 0; i < nimages; ++i) {
+        VkImageViewCreateInfo vi = {};
+        vi.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        vi.image = ctx->swapchain_images_[i];
+        vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        vi.format = ctx->swapchain_format_;
+        vi.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        vi.subresourceRange.levelCount = 1;
+        vi.subresourceRange.layerCount = 1;
+        VK_CHECK(vkCreateImageView(ctx->device_, &vi, NULL, &ctx->swapchain_views_[i]));
+
+        VkImageView attachments[2] = { ctx->swapchain_views_[i], ctx->depth_view_ };
+        VkFramebufferCreateInfo fci = {};
+        fci.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+        fci.renderPass = ctx->render_pass_;
+        fci.attachmentCount = 2;
+        fci.pAttachments = attachments;
+        fci.width = extent.width;
+        fci.height = extent.height;
+        fci.layers = 1;
+        VK_CHECK(vkCreateFramebuffer(ctx->device_, &fci, NULL, &ctx->framebuffers_[i]));
+    }
+
+    ctx->frame_.extent = extent;
     ctx->swapchain_dirty_ = false;
 
     if(g_verbose)
@@ -379,6 +491,51 @@ RenderContextHandle init_render_context(RenderWindowHandle render_window)
     VK_CHECK(vkCreateDevice(ctx->phys_device_, &dci, NULL, &ctx->device_));
     vkGetDeviceQueue(ctx->device_, ctx->queue_family_, 0, &ctx->queue_);
 
+    // render pass: color (clear -> present) + depth (clear, discard)
+    VkAttachmentDescription atts[2] = {};
+    atts[0].format = VK_FORMAT_B8G8R8A8_UNORM; // fixed choice below too
+    atts[0].samples = VK_SAMPLE_COUNT_1_BIT;
+    atts[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    atts[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    atts[0].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    atts[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    atts[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    atts[0].finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    atts[1].format = VK_FORMAT_D32_SFLOAT;
+    atts[1].samples = VK_SAMPLE_COUNT_1_BIT;
+    atts[1].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    atts[1].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    atts[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    atts[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    atts[1].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    atts[1].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+    VkAttachmentReference color_ref = { 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
+    VkAttachmentReference depth_ref = { 1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL };
+    VkSubpassDescription sub = {};
+    sub.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    sub.colorAttachmentCount = 1;
+    sub.pColorAttachments = &color_ref;
+    sub.pDepthStencilAttachment = &depth_ref;
+
+    VkSubpassDependency dep = {};
+    dep.srcSubpass = VK_SUBPASS_EXTERNAL;
+    dep.dstSubpass = 0;
+    dep.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+    dep.srcAccessMask = 0;
+    dep.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+    dep.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+
+    VkRenderPassCreateInfo rpci = {};
+    rpci.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+    rpci.attachmentCount = 2;
+    rpci.pAttachments = atts;
+    rpci.subpassCount = 1;
+    rpci.pSubpasses = &sub;
+    rpci.dependencyCount = 1;
+    rpci.pDependencies = &dep;
+    VK_CHECK(vkCreateRenderPass(ctx->device_, &rpci, NULL, &ctx->render_pass_));
+
     VkCommandPoolCreateInfo cpi = {};
     cpi.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     cpi.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
@@ -390,7 +547,8 @@ RenderContextHandle init_render_context(RenderWindowHandle render_window)
     cbi.commandPool = ctx->cmd_pool_;
     cbi.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     cbi.commandBufferCount = 1;
-    VK_CHECK(vkAllocateCommandBuffers(ctx->device_, &cbi, &ctx->cmd_buf_));
+    VK_CHECK(vkAllocateCommandBuffers(ctx->device_, &cbi, &ctx->draw_cb_));
+    VK_CHECK(vkAllocateCommandBuffers(ctx->device_, &cbi, &ctx->upload_cb_));
 
     VkSemaphoreCreateInfo semci = {};
     semci.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
@@ -401,9 +559,17 @@ RenderContextHandle init_render_context(RenderWindowHandle render_window)
     fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
     VK_CHECK(vkCreateFence(ctx->device_, &fci, NULL, &ctx->frame_fence_));
 
-    create_swapchain(ctx);
+    ctx->frame_.device = ctx->device_;
+    ctx->frame_.phys_device = ctx->phys_device_;
+    ctx->frame_.queue = ctx->queue_;
+    ctx->frame_.queue_family = ctx->queue_family_;
+    ctx->frame_.render_pass = ctx->render_pass_;
+    ctx->frame_.draw_cb = ctx->draw_cb_;
+    ctx->frame_.upload_cb = ctx->upload_cb_;
+    ctx->frame_.frame_active = false;
 
     g_ctx = ctx;
+    create_swapchain(ctx);
     return ctx;
 }
 
@@ -412,77 +578,75 @@ void make_current_context(RenderContextHandle /*ctx_h*/)
     // no-op: Vulkan has no notion of a thread-current context
 }
 
-// One frame: acquire an image, clear it, present. This is deliberately the
-// simplest correct thing (single frame in flight, fence-synchronized); the
-// real renderer will replace the body of the frame, not this structure.
-void swap_window(RenderWindowHandle /*h*/)
+bool vk_begin_frame()
 {
     RenderContext* ctx = g_ctx;
-    if(!ctx)
-        return;
+    if(!ctx || ctx->frame_.frame_active)
+        return ctx ? ctx->frame_.frame_active : false;
 
     if(ctx->swapchain_dirty_) {
         vkDeviceWaitIdle(ctx->device_);
         create_swapchain(ctx);
     }
 
-    uint32_t image_index = 0;
     VkResult res = vkAcquireNextImageKHR(ctx->device_, ctx->swapchain_, UINT64_MAX,
-                                         ctx->sem_image_available_, VK_NULL_HANDLE, &image_index);
+                                         ctx->sem_image_available_, VK_NULL_HANDLE, &ctx->cur_image_);
     if(res == VK_ERROR_OUT_OF_DATE_KHR) {
         ctx->swapchain_dirty_ = true;
-        return; // next frame recreates and draws
+        return false; // skip this frame's drawing
     }
 
-    VkCommandBuffer cb = ctx->cmd_buf_;
-    vkResetCommandBuffer(cb, 0);
     VkCommandBufferBeginInfo bi = {};
     bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    VK_CHECK(vkBeginCommandBuffer(cb, &bi));
+    vkResetCommandBuffer(ctx->upload_cb_, 0);
+    VK_CHECK(vkBeginCommandBuffer(ctx->upload_cb_, &bi));
+    vkResetCommandBuffer(ctx->draw_cb_, 0);
+    VK_CHECK(vkBeginCommandBuffer(ctx->draw_cb_, &bi));
 
-    VkImage image = ctx->swapchain_images_[image_index];
-    VkImageSubresourceRange range = {};
-    range.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    range.levelCount = 1;
-    range.layerCount = 1;
+    VkClearValue clears[2];
+    clears[0].color.float32[0] = 0.0f;
+    clears[0].color.float32[1] = 0.0f;
+    clears[0].color.float32[2] = 0.0f;
+    clears[0].color.float32[3] = 1.0f;
+    clears[1].depthStencil.depth = 1.0f;
+    clears[1].depthStencil.stencil = 0;
 
-    VkImageMemoryBarrier to_clear = {};
-    to_clear.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    to_clear.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    to_clear.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    to_clear.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    to_clear.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    to_clear.image = image;
-    to_clear.subresourceRange = range;
-    to_clear.srcAccessMask = 0;
-    to_clear.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &to_clear);
+    VkRenderPassBeginInfo rbi = {};
+    rbi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    rbi.renderPass = ctx->render_pass_;
+    rbi.framebuffer = ctx->framebuffers_[ctx->cur_image_];
+    rbi.renderArea.extent = ctx->swapchain_extent_;
+    rbi.clearValueCount = 2;
+    rbi.pClearValues = clears;
+    vkCmdBeginRenderPass(ctx->draw_cb_, &rbi, VK_SUBPASS_CONTENTS_INLINE);
 
-    // distinctive teal so a Vulkan run is visually unmistakable vs. GL black
-    VkClearColorValue clear_color = {{0.0f, 0.25f, 0.30f, 1.0f}};
-    vkCmdClearColorImage(cb, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                         &clear_color, 1, &range);
+    ctx->frame_.frame_active = true;
+    return true;
+}
 
-    VkImageMemoryBarrier to_present = to_clear;
-    to_present.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    to_present.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-    to_present.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    to_present.dstAccessMask = 0;
-    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                         VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL, 0, NULL, 1, &to_present);
+// End the frame: close the render pass, submit uploads then draws, present.
+void swap_window(RenderWindowHandle /*h*/)
+{
+    RenderContext* ctx = g_ctx;
+    if(!ctx)
+        return;
+    if(!ctx->frame_.frame_active)
+        return; // nothing was begun this frame (e.g. swapchain out of date)
 
-    VK_CHECK(vkEndCommandBuffer(cb));
+    vkCmdEndRenderPass(ctx->draw_cb_);
+    VK_CHECK(vkEndCommandBuffer(ctx->draw_cb_));
+    VK_CHECK(vkEndCommandBuffer(ctx->upload_cb_));
 
-    VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    VkCommandBuffer cbs[2] = { ctx->upload_cb_, ctx->draw_cb_ };
+    VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
     VkSubmitInfo si = {};
     si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     si.waitSemaphoreCount = 1;
     si.pWaitSemaphores = &ctx->sem_image_available_;
     si.pWaitDstStageMask = &wait_stage;
-    si.commandBufferCount = 1;
-    si.pCommandBuffers = &cb;
+    si.commandBufferCount = 2;
+    si.pCommandBuffers = cbs;
     si.signalSemaphoreCount = 1;
     si.pSignalSemaphores = &ctx->sem_render_done_;
     VK_CHECK(vkQueueSubmit(ctx->queue_, 1, &si, ctx->frame_fence_));
@@ -493,13 +657,17 @@ void swap_window(RenderWindowHandle /*h*/)
     pi.pWaitSemaphores = &ctx->sem_render_done_;
     pi.swapchainCount = 1;
     pi.pSwapchains = &ctx->swapchain_;
-    pi.pImageIndices = &image_index;
-    res = vkQueuePresentKHR(ctx->queue_, &pi);
+    pi.pImageIndices = &ctx->cur_image_;
+    VkResult res = vkQueuePresentKHR(ctx->queue_, &pi);
     if(res == VK_ERROR_OUT_OF_DATE_KHR || res == VK_SUBOPTIMAL_KHR)
         ctx->swapchain_dirty_ = true;
 
+    // single frame in flight: wait now so per-frame resources (ring buffer,
+    // descriptor pool) are free to reset at the next vk_begin_frame
     VK_CHECK(vkWaitForFences(ctx->device_, 1, &ctx->frame_fence_, VK_TRUE, UINT64_MAX));
     VK_CHECK(vkResetFences(ctx->device_, 1, &ctx->frame_fence_));
+
+    ctx->frame_.frame_active = false;
 }
 
 void destroy_render_context(RenderContextHandle rc_handle)
@@ -508,10 +676,12 @@ void destroy_render_context(RenderContextHandle rc_handle)
     if(!ctx)
         return;
     vkDeviceWaitIdle(ctx->device_);
+    destroy_swapchain_views(ctx);
     vkDestroyFence(ctx->device_, ctx->frame_fence_, NULL);
     vkDestroySemaphore(ctx->device_, ctx->sem_render_done_, NULL);
     vkDestroySemaphore(ctx->device_, ctx->sem_image_available_, NULL);
     vkDestroyCommandPool(ctx->device_, ctx->cmd_pool_, NULL);
+    vkDestroyRenderPass(ctx->device_, ctx->render_pass_, NULL);
     vkDestroySwapchainKHR(ctx->device_, ctx->swapchain_, NULL);
     vkDestroyDevice(ctx->device_, NULL);
     vkDestroySurfaceKHR(ctx->instance_, ctx->surface_, NULL);
