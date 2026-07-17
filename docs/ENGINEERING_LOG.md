@@ -6,6 +6,30 @@ Newest entries at the top. Practice borrowed from the
 
 ---
 
+## 2026-07-17 — M1 playthrough observations triaged (user played Training 1+2 to completion)
+
+User-verified in play: mission load, unit orders, pathing, combat (targeted
+and destroyed a truck), win triggers, campaign progression (next mission
+unlocked), edge-scroll, wheel zoom, minimap jump, keyboard shortcuts.
+Findings from the run:
+
+**Campaigns listed twice in New Game** → side effect of unpacking
+`data/campaign/` to disk: `LogisticsSaveDialog::initDialog` scans the dir
+for `*.fit` (finds campaign + tutorial), then a hardcoded fallback ("may be
+in fast files") adds the same two again — retail never saw this because
+those two lived only in the FST, so the scan came up empty. Fix: fallback
+now skips names the scan already added (`isInGameList`); both packed and
+unpacked layouts work.
+
+**Vidcom static on Training mission-select** → not a bug: `tutorial.fit`
+declares `Video = ""`, so the static overlay is the authentic no-briefing
+placeholder. All 185 campaign briefing videos are present as converted
+`.mpg` (`STANDIN`, `NODE_*`, etc.), so Carver V should play real briefings
+— worth confirming when someone plays the main campaign.
+
+**`i=0..24` spew during mission load** → upstream's forgotten debug printf
+in `CSpecificEnemyUnitObjectiveCondition::Read` (objective.cpp) — removed.
+
 ## 2026-07-17 — First mission running on macOS (mc2_01 in-game, zero code changes)
 
 **Solo Mission list would have been empty** → the mission browser
