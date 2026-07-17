@@ -27,7 +27,10 @@ Next: M2 (Vulkan renderer), starting with the renderer abstraction audit
 (gos/MLR boundary — where does a Vulkan backend plug in). GitHub remote
 deferred by user (still no backup — revisit). Carried forward: AD-4
 (asset-dir config + friendly missing-assets message); minor: clamp
-resolution requests to usable display bounds.
+resolution requests to usable display bounds; load-screen exit animation
+draws 800x600-sized in a corner over the already-switched full-res mission
+(loadscreen.cpp:470 applies prefs before the out-anim plays — fix: delay
+applyPrefs until anim done, or scale legacy GUI coords to viewport).
 
 ## Key decisions (context for all work)
 
