@@ -9,15 +9,17 @@ architecture decisions and codebase evaluation, and `docs/ROADMAP.md` for milest
 
 ## Current status
 
-M0 complete; M1 mostly complete (2026-07-17): game boots on macOS ARM64,
-main menu renders and is fully interactive, intro skip works cleanly
-(ESC/space/click cut straight to the menu), clean exit. Game dir:
+**M0 and M1 complete (2026-07-17): the game is playable on macOS ARM64.**
+Missions load and play start-to-finish (movement, combat, win triggers,
+campaign progression user-verified on Training 1 & 2). Game dir:
 `~/Games/mc2-port` (built from mc2srcdata; deployment recipe in
-ENGINEERING_LOG). `MC2_AUTOQUIT_SECS=N` quits cleanly after N seconds for
-unattended testing.
+ENGINEERING_LOG — note `data/missions/` and `data/campaign/` must be
+unpacked on disk). Unattended testing: `MC2_AUTOQUIT_SECS=N ./mc2 -mission
+mc2_01` boots straight into a mission and quits cleanly after N seconds.
 
-Next session: M1 exit criterion — load and play a Solo Mission start to
-finish.
+Next: M2 (Vulkan renderer). Before starting it: set up the private GitHub
+remote (main has no backup); AD-4 (asset-dir config + friendly
+missing-assets message) carried forward from M1.
 
 ## Key decisions (context for all work)
 
