@@ -40,14 +40,32 @@
 #include<string.h> // memcmp
 #include "platform_windows.h"
 
+#if defined(__i386__) || defined(__x86_64__)
 static __inline__ unsigned long long rdtsc(void)
 {
     unsigned long x;
     __asm__ volatile (".byte 0x0f, 0x31" : "=A" (x));
     return x;
 }
+#elif defined(__aarch64__)
+static __inline__ unsigned long long rdtsc(void)
+{
+    // no TSC on ARM64; the generic timer's virtual counter is the analog
+    unsigned long long x;
+    __asm__ volatile ("mrs %0, cntvct_el0" : "=r" (x));
+    return x;
+}
+#else
+#include <time.h>
+static __inline__ unsigned long long rdtsc(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
+    return (unsigned long long)ts.tv_sec * 1000000000ull + (unsigned long long)ts.tv_nsec;
+}
+#endif
 // or just use clock_gettime(CLOCK_MONOTONIC_RAW);
-// or 
+// or
 //clock_gettime(CLOCK_PROCESS_CPUTIME_ID)
 #else
 #include <memory.h> // memcmp

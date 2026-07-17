@@ -228,7 +228,7 @@ long HeapManager::commitHeap (unsigned long commitSize)
 #else	
 		return NO_ERR;
 #endif
-#else
+#elif defined(__x86_64__)
 		// only correct for 64bit?
         // currentEbp = esp;
         asm("mov %%rsp, %0;"
@@ -236,6 +236,9 @@ long HeapManager::commitHeap (unsigned long commitSize)
             :
             :
         );
+#else
+		// no x86 stack to walk (e.g. ARM64); skip like the _WIN64 path above
+		return NO_ERR;
 #endif
 		prevEbp = *((unsigned long *)currentEbp);
 		retAddr = *((unsigned long *)(currentEbp+4));

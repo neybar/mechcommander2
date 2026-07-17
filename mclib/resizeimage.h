@@ -17,7 +17,11 @@
 #include"dstd.h"
 #endif
 
-#include<malloc.h>
+#ifdef __APPLE__
+#include <stdlib.h> // malloc lives here; Darwin has no <malloc.h>
+#else
+#include <malloc.h>
+#endif
 #include<memory.h>
 #include<math.h>
 

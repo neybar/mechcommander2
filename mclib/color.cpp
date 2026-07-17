@@ -73,7 +73,7 @@ void initColorTables (void)
 			sprintf(colorBlock,"Color%d",j);
 
             // sebi
-            long unsigned int tmp;
+            uint64_t tmp; // exact overload type; unsigned long is distinct on Darwin
 			result = colorFile.readIdULong(colorBlock, tmp);
             table[j] = (DWORD)tmp;
 			gosASSERT(result == NO_ERR);

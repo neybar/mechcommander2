@@ -63,6 +63,12 @@ find_package(ZLIB REQUIRED)
 
 message("Found SDL2 package ${SDL2_LIBRARIES}" )
 message("SDL2 prefix: ${SDL2_PREFIX}")
+
+if(APPLE)
+    # Homebrew's include root is not a default search path, so <SDL2/SDL.h>
+    # style includes need the SDL2 install prefix added explicitly
+    include_directories("${SDL2_PREFIX}/include")
+endif()
 message("OPENGL library found in ${OPENGL}")
 message("GLEW library found in ${GLEW}")
 message("Zlib library found in ${ZLIB}")

@@ -124,7 +124,7 @@ class MouseCursorData
 		StaticInfo*	cursorInfos;	// gotta be pointer, so destructor is called before texmgr quits
 
 		char mouseHS[MAX_MOUSE_STATES][2];
-		unsigned long numFrames[MAX_MOUSE_STATES];
+		uint64_t numFrames[MAX_MOUSE_STATES]; // exact readIdULong overload type; unsigned long is distinct on Darwin
 		float frameLengths[MAX_MOUSE_STATES];
 
 		friend class UserInput;

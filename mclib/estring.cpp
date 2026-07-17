@@ -12,7 +12,11 @@
 
 #ifdef UNICODE
 #define K_UNICODE
-#include<malloc.h>
+#ifdef __APPLE__
+#include <stdlib.h> // malloc lives here; Darwin has no <malloc.h>
+#else
+#include <malloc.h>
+#endif
 #include<tchar.h>
 #endif
 

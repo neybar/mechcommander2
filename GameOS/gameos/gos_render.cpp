@@ -7,7 +7,9 @@
 #include <assert.h>
 #include <SDL2/SDL.h>
 #include <GL/glew.h>
+#ifndef __APPLE__ // glew.h already declares everything; macOS has no GL/gl.h
 #include <GL/gl.h>
+#endif
 #include "utils/logging.h"
 
 // FIXME: think how to make it better when different parts need window

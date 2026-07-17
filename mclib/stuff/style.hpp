@@ -175,4 +175,6 @@ namespace Stuff {
 
 }
 
-void* operator new(size_t size, void* where) noexcept;
+// libc++ declares placement new with ABI attributes that make a plain
+// redeclaration an error; use the standard header instead of declaring it here
+#include <new>

@@ -20,7 +20,11 @@
 #include<heap.h>
 #endif
 
-#include<malloc.h>
+#ifdef __APPLE__
+#include<stdlib.h> // malloc lives here; Darwin has no <malloc.h>
+#else
+#include <malloc.h>
+#endif
 #include<stdlib.h>
 #include<stdio.h>
 #include"platform_str.h"

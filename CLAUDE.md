@@ -9,8 +9,10 @@ architecture decisions and codebase evaluation, and `docs/ROADMAP.md` for milest
 
 ## Current status
 
-Pre-code. Repo contains planning docs only. Next step is Milestone 0:
-vendor the base codebase and get it compiling on macOS ARM64 (see ROADMAP).
+M0 complete (2026-07-16): alariq/mc2 vendored at upstream SHA 35af1c2 and
+building cleanly on macOS ARM64 — `build/mc2` links with zero stubs. The
+binary has not been run yet. Next: M1 — boot to main menu with user-provided
+assets (see ROADMAP).
 
 ## Key decisions (context for all work)
 
@@ -55,5 +57,7 @@ vendor the base codebase and get it compiling on macOS ARM64 (see ROADMAP).
 
 ## Build
 
-Not yet established. Once M0 lands this section gets the real commands.
-Target: `cmake -B build && cmake --build build` on all three platforms.
+`cmake -B build && cmake --build build -j8` → `build/mc2`. Prereqs and
+platform notes in BUILDING.md. When adding/porting code, watch for the Darwin
+traps catalogued in docs/ENGINEERING_LOG.md — especially `unsigned long` vs
+`uint64_t` overload identity and `<malloc.h>`.

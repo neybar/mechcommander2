@@ -34,7 +34,11 @@ controlGui.cpp			: Implementation of the controlGui component.
 #include"txmmgr.h"
 
 #include "../resource.h"
-#include"malloc.h"
+#ifdef __APPLE__
+#include <stdlib.h> // malloc lives here; Darwin has no <malloc.h>
+#else
+#include "malloc.h"
+#endif
 
 #include"chatwindow.h"
 

@@ -13,7 +13,11 @@ LogisticsData.cpp			: Implementation of the LogisticsData component.
 #include"paths.h"
 #include"warrior.h"
 #include"../resource.h"
-#include"malloc.h"
+#ifdef __APPLE__
+#include <stdlib.h> // malloc lives here; Darwin has no <malloc.h>
+#else
+#include "malloc.h"
+#endif
 #include"team.h"
 #include"mech.h"
 #include"logisticsmissioninfo.h"

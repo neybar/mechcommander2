@@ -5,6 +5,11 @@
 #include <sys/stat.h>
 #include <string.h>
 
+#ifdef __APPLE__
+// Darwin names the struct stat timespec fields st_*timespec, not POSIX st_*tim
+#define st_mtim st_mtimespec
+#endif
+
 namespace filesystem {
 
 #ifdef LINUX_BUILD

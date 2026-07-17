@@ -40,7 +40,11 @@
 #include<gameos.hpp>
 
 #ifdef UNICODE
-#include<malloc.h>
+#ifdef __APPLE__
+#include <stdlib.h> // malloc lives here; Darwin has no <malloc.h>
+#else
+#include <malloc.h>
+#endif
 #include<tchar.h>
 #endif
 

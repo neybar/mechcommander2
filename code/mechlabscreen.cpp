@@ -14,7 +14,11 @@ MechLabScreen.cpp			: Implementation of the MechLabScreen component.
 #include"platform_windows.h"
 #include "../resource.h"
 #include"logisticsdialog.h"
-#include<malloc.h>
+#ifdef __APPLE__
+#include <stdlib.h> // malloc lives here; Darwin has no <malloc.h>
+#else
+#include <malloc.h>
+#endif
 #include"gamesound.h"
 #include"chatwindow.h"
 #include"multplyr.h"

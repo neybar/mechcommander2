@@ -2,7 +2,11 @@
 #define STRING_UTILS_H
 
 #include <memory.h>
+#ifdef __APPLE__
+#include <stdlib.h> // malloc lives here; Darwin has no <malloc.h>
+#else
 #include <malloc.h>
+#endif
 #include <string.h>
 #include <ctype.h> // for tolower
 #include <cassert>

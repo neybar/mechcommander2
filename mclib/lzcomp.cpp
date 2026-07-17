@@ -14,7 +14,11 @@
 
 #else
 #include<assert.h>
-#include<malloc.h>
+#ifdef __APPLE__
+#include <stdlib.h> // malloc lives here; Darwin has no <malloc.h>
+#else
+#include <malloc.h>
+#endif
 #define gosASSERT assert
 #define gos_Malloc malloc
 #define gos_Free free

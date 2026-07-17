@@ -150,6 +150,18 @@ class FitIniFile : public File
 		long readIdULong (const char *varName, uint64_t &value);
         // sebi
 		long readIdULong (const char *varName, DWORD &value);
+#if defined(__APPLE__) && defined(__LP64__)
+		// Darwin LP64: unsigned long is 64-bit but a distinct type from
+		// uint64_t (unsigned long long), unlike glibc; delegate so existing
+		// call sites with unsigned long lvalues keep compiling
+		long readIdULong (const char *varName, unsigned long &value)
+		{
+			uint64_t tmp = 0;
+			long result = readIdULong(varName, tmp);
+			value = (unsigned long)tmp;
+			return result;
+		}
+#endif
 		
 		long readIdShort (const char *varName, short &value);
 		long readIdUShort (const char *varName, unsigned short &value);
