@@ -30,9 +30,14 @@ per the project owner: a clean build on macOS is the first success condition.
 
 ## M2 — Vulkan renderer (the real graphics work)  ← current target
 
-- [ ] Audit the renderer abstraction boundary in the codebase (gos/MLR layers)
+- [x] Audit the renderer abstraction boundary in the codebase (gos/MLR layers)
+      — docs/RENDERER_AUDIT.md: the gos_* API is the waist; backends live in
+      GameOS/gameos/render{gl,vk}/ behind `cmake -DMC2_RENDERER=...`
 - [ ] Vulkan backend behind that boundary; MoltenVK on macOS
+      — *scaffold done: MoltenVK clears/presents inside the real game loop;
+      null gos_* backend runs the game logic. Parity work next.*
 - [ ] Shader translation strategy decided (OQ-4) and implemented
+      — *leaning: port the ~9 small shaders to Vulkan-GLSL, offline glslc*
 - [ ] OpenGL path kept until Vulkan reaches parity, then retired
 - Exit criterion: same mission plays on the Vulkan backend on all three platforms.
 

@@ -6,6 +6,29 @@ Newest entries at the top. Practice borrowed from the
 
 ---
 
+## 2026-07-17 — M2 begins: backend split, first MoltenVK frame
+
+Not a bug hunt — a milestone marker with the traps we dodged recorded.
+The renderer audit (docs/RENDERER_AUDIT.md) found the gos_* API is a clean
+waist: all GL was already confined to 5 files, except two leaks (raw GL in
+gameosmain.cpp's frame loop; a `gl_utils.h` include in txmmgr.cpp that only
+wanted the packed-color helpers — moved to utils/vec). After plugging those,
+the split was file moves: GL implementation → `rendergl/`, new `rendervk/`
+selected by `cmake -DMC2_RENDERER=VULKAN` (GL stays default).
+
+First Vulkan frame (teal clear, presented inside the real game loop, clean
+autoquit) worked on the first run. MoltenVK specifics that mattered:
+`VK_KHR_portability_enumeration` + the portability instance flag (the brew
+vulkan-loader hides non-conformant devices otherwise), enabling
+`VK_KHR_portability_subset` on the device because MoltenVK advertises it,
+and `SDL_Vulkan_LoadLibrary` needing a fallback path to
+`/opt/homebrew/lib/libvulkan.dylib` on dev machines (the shipped .app will
+bundle MoltenVK instead). Deps: `brew install molten-vk vulkan-headers
+vulkan-loader`. The null gos_* backend backs texture Lock/Unlock with
+correctly sized buffers (decoded via the shared Image code) and loads real
+glyph metrics — the game's logistics/GUI code runs happily against it,
+which is the parity-porting workbench for everything that comes next.
+
 ## 2026-07-17 — Windowed mode & resolution switching work; the cursor-cage hunt
 
 Session goal: graphics testing (windowed mode, resolution changes). Windowed
