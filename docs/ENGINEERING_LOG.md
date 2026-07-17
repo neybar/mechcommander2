@@ -6,6 +6,35 @@ Newest entries at the top. Practice borrowed from the
 
 ---
 
+## 2026-07-17 — First mission running on macOS (mc2_01 in-game, zero code changes)
+
+**Solo Mission list would have been empty** → the mission browser
+(`MPLoadMap::seedDialog`) enumerates `data/missions/*.fit` with
+`FindFirstFile`, and the port's emulation (platform_winbase.cpp) is a plain
+`scandir` of the real filesystem — fast files are invisible to it. Retail
+worked because the installer put `data\missions\` on disk (Win32's real
+FindFirstFile can't see into FSTs either; that's also how mission mods drop
+in). Our game dir only had the FSTs. Fix is deployment, not engine:
+`makefst -d -f mission.fst -p <out>` unpacks (output nests under
+`<out>/mission.fst/`), then copy `data/missions/` (36 MB, 180 files) and
+`data/campaign/` into the game dir. File precedence is disk-first
+(`File::open` tries `_open` before `FastFileFind`), so on-disk missions
+override FST copies — retail modding behavior preserved.
+
+**Unattended in-mission testing works out of the box**: the original devs
+left a `-mission <name>` command line flag (ParseCommandLine, mechcmd2.cpp)
+that sets `justStartMission` and boots straight into the mission with
+`MISSION_LOAD_SP_QUICKSTART` (canned 3-mech lance, no logistics screens).
+`MC2_AUTOQUIT_SECS=45 ./mc2 -mission mc2_01` + `screencapture` gave visual
+proof: terrain, mechs, pilot bar, minimap, compass and hint bar all render;
+45 s stable, clean exit. First time the tactical game has run on macOS ARM64
+— and it needed **no code changes**, only the data deployment above.
+
+The `i=0..24` stdout spew during load is upstream's leftover debug printf in
+`CSpecificEnemyUnitObjectiveCondition::Read` (objective.cpp:447) — harmless,
+candidate for removal. Remaining M1 exit criterion: a human start-to-finish
+playthrough (win/loss flow, mission results screens).
+
 ## 2026-07-17 — ESC-skipping the intro no longer strands the menu on black
 
 **Menu drawn over solid black for ~8 s after ESC-skipping the intro movie**
