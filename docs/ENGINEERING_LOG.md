@@ -6,6 +6,22 @@ Newest entries at the top. Practice borrowed from the
 
 ---
 
+## 2026-07-17 — M2: menus render on Vulkan (immediate-mode path complete)
+
+Same-day follow-up to the backend split: the gos immediate-mode path
+(quads/tris/lines/points + drawText) now renders for real on MoltenVK — the
+full main menu is pixel-faithful to GL on the first successful boot. The
+things that made it work on the first try, recorded for the mission-parity
+work: (1) copy the GL quirks verbatim, don't "fix" them — the tex shader's
+`Color.bgra` swizzle and gos_vertex's divide-by-rhw are load-bearing;
+(2) GL uploads matrices with transpose=GL_TRUE from row-major storage, so
+push constants need the same transpose or everything vanishes off-screen;
+(3) a negative-height viewport (core in Vulkan 1.1) keeps GL's clip-space
+orientation, so the GL projection matrix and winding rules port unchanged;
+(4) glslc `#include` works with plain relative paths, letting the five
+shaders share one push-constant block. Retained-buffer draws (mech meshes,
+FMV YCbCr) are still no-ops — that's the next slice, then terrain.
+
 ## 2026-07-17 — M2 begins: backend split, first MoltenVK frame
 
 Not a bug hunt — a milestone marker with the traps we dodged recorded.
