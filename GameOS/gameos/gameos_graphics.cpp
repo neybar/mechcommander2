@@ -1304,6 +1304,7 @@ class gosRenderer {
 const std::string gosRenderer::s_Foreground = std::string("Foreground");
 
 static GLuint gVAO = 0;
+extern bool g_disable_quads; // defined below, reset each frame in beginFrame
 
 void gosRenderer::init() {
     initRenderStates();
@@ -1608,12 +1609,27 @@ void gosRenderer::applyRenderStates() {
 
 void gosRenderer::beginFrame()
 {
+    // frame setup used to live in gameosmain.cpp's draw_screen(); it is here
+    // so the main loop stays free of graphics-API calls (Vulkan backend prep)
+    g_disable_quads = false;
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glCullFace(GL_FRONT);
+
+    glViewport(0, 0, Environment.drawableWidth, Environment.drawableHeight);
+    CHECK_GL_ERROR;
+
+    // TODO: reset all states to sane defaults!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    glDepthMask(GL_TRUE);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
     glBindVertexArray(gVAO);
     num_draw_calls_ = 0;
 }
 
 void gosRenderer::endFrame()
 {
+    glUseProgram(0);
+
     // check for file changes every half second
     static uint64_t last_check_time = timing::get_wall_time_ms();
     if(timing::get_wall_time_ms() - last_check_time > 500)
