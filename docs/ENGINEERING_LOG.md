@@ -26,7 +26,19 @@ Original-2001 bug, present upstream too. Repro was fully automated with a new
 dev hook: env var `MC2_AUTOQUIT_SECS=N` drives the normal quit path after N
 seconds (kept for future smoke tests).
 
-**Menu background stays black for 10–15 s** → NOT a bug. Profiling showed the
+**UPDATE (user observation, end of session):** the black period depends on how
+the intro movie ends. If the movie is **skipped with ESC**, the menu comes up
+and sits black until the background reveal starts; if the movie **plays to
+completion**, the background reveal begins before the menu is drawn, so no
+black screen is perceived. So the skip path has a sequencing difference —
+likely the splash-intro/beginAnim state machine starts its clock at different
+moments relative to menu draw depending on how introMovie terminates
+(MainMenu::update movie-skip path vs movie-finished path, mainmenu.cpp
+~445-470). **To investigate next session** — the fix is probably to make the
+ESC-skip path enter the same state the natural-completion path does.
+
+**Menu background stays black for 10–15 s** → see UPDATE above; the data-driven
+reveal below is real but the *perceived* issue is the ESC path. Profiling showed the
 game idle at vsync (nothing loading); per-second state instrumentation showed
 `SplashIntro.animObjects[0]` running for ~12 s after the intro movie. The
 animation data (`art/mcl_splashscreenintro.fit`, "rectfade") deliberately
