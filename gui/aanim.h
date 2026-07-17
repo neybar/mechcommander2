@@ -27,6 +27,7 @@ public:
 	void	begin();
 	void	reverseBegin();
 	void	end();
+	void	skipToEnd();
 
 	void	update();
 
