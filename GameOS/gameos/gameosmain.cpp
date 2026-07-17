@@ -107,12 +107,9 @@ static void process_events( void ) {
                     // gos_SetScreenMode requested (macOS clamps oversized
                     // windows, Cocoa resizes asynchronously, the user can
                     // drag-resize) — refresh the drawable size here or mouse
-                    // normalization and glViewport keep using the stale one
-                    SDL_Window* wnd = SDL_GetWindowFromID(event.window.windowID);
-                    if (wnd) {
-                        SDL_GL_GetDrawableSize(wnd,
-                            &Environment.drawableWidth, &Environment.drawableHeight);
-                    }
+                    // normalization and the viewport keep using the stale one
+                    graphics::get_drawable_size(gos_GetWindow(),
+                        &Environment.drawableWidth, &Environment.drawableHeight);
 
                     // re-apply the mouse capture so a fullscreen grab's
                     // confinement rect tracks the new window size
