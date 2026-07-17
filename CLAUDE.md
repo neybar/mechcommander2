@@ -9,17 +9,15 @@ architecture decisions and codebase evaluation, and `docs/ROADMAP.md` for milest
 
 ## Current status
 
-M0 complete; M1 mostly complete (2026-07-16): game boots on macOS ARM64,
-main menu renders and is fully interactive, clean exit. Game dir:
+M0 complete; M1 mostly complete (2026-07-17): game boots on macOS ARM64,
+main menu renders and is fully interactive, intro skip works cleanly
+(ESC/space/click cut straight to the menu), clean exit. Game dir:
 `~/Games/mc2-port` (built from mc2srcdata; deployment recipe in
 ENGINEERING_LOG). `MC2_AUTOQUIT_SECS=N` quits cleanly after N seconds for
 unattended testing.
 
-Next session:
-1. Fix ESC-skip sequencing: skipping the intro movie with ESC leaves the menu
-   black until the background reveal starts; letting the movie finish doesn't
-   (user-observed; see ENGINEERING_LOG update note).
-2. M1 exit criterion: load and play a Solo Mission start to finish.
+Next session: M1 exit criterion — load and play a Solo Mission start to
+finish.
 
 ## Key decisions (context for all work)
 
