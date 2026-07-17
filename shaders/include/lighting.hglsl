@@ -22,7 +22,7 @@ struct ObjectLights {
     ivec4 numLights;
 };
 
-layout (binding = LIGHT_DATA_ATTACHMENT_SLOT, std140) uniform LightsData
+layout (std140) uniform LightsData
 {
     ObjectLights light[32];
 };
@@ -97,7 +97,7 @@ vec3 get_base_light(
     {
 
     }
-    else if ((start_v_light & 0x00ffffff)!=0)		//Some other kind of light, just add it in.
+    else if ((start_v_light & 0x00ffffffu)!=0)		//Some other kind of light, just add it in.
     {
         if (!lightsOut)
         {

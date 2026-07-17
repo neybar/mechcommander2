@@ -168,7 +168,13 @@ class gosMaterialVariationHelper {
 
         void getMaterialVariation(gosMaterialVariation& variation)
         {
+#ifdef __APPLE__
+            // macOS GL is frozen at 4.1 / GLSL 410; UBO binding points are set
+            // from C++ (glUniformBlockBinding) instead of layout(binding=N)
+            std::string defines_str = "#version 410\n";
+#else
             std::string defines_str = "#version 420\n";
+#endif
             std::string unique_suffix_str = "#";
             for(auto d : defines)
             {
@@ -2259,11 +2265,16 @@ bool gos_CreateRenderer(HGOSWINDOW win, int w, int h) {
         return false;
     }
 
-	glEnable(GL_DEBUG_OUTPUT);
-	glEnable(GL_DEBUG_OUTPUT_SYNCHRONOUS);
-	//glPushDebugGroup(GL_DEBUG_SOURCE_APPLICATION, 76, 1, "My debug group");
-	glDebugMessageControlARB(GL_DONT_CARE, GL_DONT_CARE, GL_DONT_CARE, 0, NULL, GL_TRUE);
-	glDebugMessageCallbackARB((GLDEBUGPROC)&OpenGLDebugLog, NULL);
+	// ARB_debug_output does not exist on macOS GL 4.1 (frozen pre-4.3);
+	// calling through GLEW's NULL pointers crashes, so gate on the extension
+	if (GLEW_ARB_debug_output && glDebugMessageControlARB && glDebugMessageCallbackARB)
+	{
+		glEnable(GL_DEBUG_OUTPUT);
+		glEnable(GL_DEBUG_OUTPUT_SYNCHRONOUS);
+		//glPushDebugGroup(GL_DEBUG_SOURCE_APPLICATION, 76, 1, "My debug group");
+		glDebugMessageControlARB(GL_DONT_CARE, GL_DONT_CARE, GL_DONT_CARE, 0, NULL, GL_TRUE);
+		glDebugMessageCallbackARB((GLDEBUGPROC)&OpenGLDebugLog, NULL);
+	}
 
     SPEW(("GRAPHICS", "Status: Using GLEW %s\n", glewGetString(GLEW_VERSION)));
     //if ((!GLEW_ARB_vertex_program || !GLEW_ARB_fragment_program))

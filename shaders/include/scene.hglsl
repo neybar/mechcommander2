@@ -13,15 +13,15 @@ struct SceneData_t {
    vec4 baseVertexColor;
 };
 
-layout (binding = SCENE_DATA_ATTACHMENT_SLOT, std140) uniform SceneData
+layout (std140) uniform SceneData
 {
     SceneData_t g_scene;
 };
 
 float calc_fog_factor(in vec3 wpos, in vec3 cam_pos)
 {
-    const float fogStart = g_scene.fogStart;
-    const float fogFull = g_scene.fogFull;
+    float fogStart = g_scene.fogStart;
+    float fogFull = g_scene.fogFull;
 
     float eyeDistance = length(wpos - cam_pos.xyz);
     float haze_factor = 

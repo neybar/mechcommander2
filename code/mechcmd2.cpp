@@ -836,7 +836,11 @@ void __stdcall InitializeGameEngine()
 		gosResourceHandle = gos_OpenResourceDLL("mc2res_32.dll", NULL, 0);
 	#endif
 #else
+#ifdef __APPLE__
+	gosResourceHandle = gos_OpenResourceDLL(sizeof(void*)==8 ? "./libmc2res_64.dylib" : "./libmc2res_32.dylib", NULL, 0);
+#else
 	gosResourceHandle = gos_OpenResourceDLL(sizeof(void*)==8 ? "./libmc2res_64.so" : "./libmc2res_32.so", NULL, 0);
+#endif
 #endif
 
 	if(!gosResourceHandle) {

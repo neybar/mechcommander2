@@ -9,7 +9,7 @@ layout(location = 1) in vec3 normal;
 layout(location = 2) in vec4 aRGBLight;
 layout(location = 3) in vec2 texcoord;
 
-layout (binding = 1, std140) uniform mesh_data
+layout (std140) uniform mesh_data
 { 
   vec4 ambient;
   vec4 diffuse;
@@ -51,6 +51,9 @@ void main(void)
 
     // something is wrong with this: check later
     //CameraPos = (inverse(view_) * vec4(0,0,0,1)).xyz;
+    // Apple's GLSL linker rejects a fragment input never written by the
+    // vertex stage, so write the camera position from the scene UBO
+    CameraPos = g_scene.cameraPos.xyz;
 
     vec4 p2 = projection_ * vec4(p.xyz,1);
 
@@ -68,7 +71,7 @@ void main(void)
             vec3(0.0), vec3(0.0), vec3(0.0));
 
 #if ENABLE_VERTEX_LIGHTING
-    const int lights_index = int(light_offset_.x);
+    int lights_index = int(light_offset_.x);
     VertexLight = calc_light(lights_index, Normal, base_light);
 #else
     VertexLight = base_light;

@@ -6,6 +6,55 @@ Newest entries at the top. Practice borrowed from the
 
 ---
 
+## 2026-07-16 — M1: first boot on macOS (engine runs, shaders compile clean)
+
+Game data: built entirely from alariq's mc2srcdata repo using our arm64-built
+tools (aseconv/makefst/makersp/pak/text_tool + ffmpeg); `make all
+BUILD_PLATFORM=linux` worked unmodified on macOS, zero errors. Game dir at
+`~/Games/mc2-port` (shared-source data only). The user's retail RIP
+(`~/Games/MechCommander2`) turned out to lack camera/effect/insignia.fst and
+the port's own converted font assets (.bmp/.glyph vs retail .d3f) — pure
+shared-source data is the cleaner path; retail remains available for
+movies/sound comparison later.
+
+Boot battles, in order:
+
+**dlopen of libmc2res_64.so failed** → the resource DLL replacement is built as
+`.dylib` on macOS but mechcmd2.cpp hardcoded `.so` → `__APPLE__` branch loads
+the dylib name. (Also: deploy `build/out/res/libmc2res_64.dylib` next to mc2.)
+
+**"Please insert the MechCommander 2 CD" loop** → retail RIP lacked 3 of the 8
+FSTs listed in system.cfg → solved properly by building all 8 from mc2srcdata.
+
+**SIGSEGV calling address 0x0 right after GL context creation** → engine
+unconditionally calls `glDebugMessageControlARB`/`glDebugMessageCallbackARB`;
+ARB_debug_output doesn't exist on Apple's GL (frozen at 4.1, debug output is
+4.3-era) so GLEW leaves NULLs → gated on `GLEW_ARB_debug_output`. Note: macOS
+happily gave us a real GL **4.1 core** context on the M4 Pro ("4.1 Metal - 90.5"),
+and `glGetString(GL_EXTENSIONS)` returning NULL in core profile is expected.
+
+**Every shader failed: "version '420' is not supported"** → the engine injects
+`#version 420` (gameos_graphics.cpp); macOS caps at GLSL 410 → inject 410 on
+Apple. The only 420 feature used was `layout(binding=N)` on UBOs — removed from
+shaders; the engine already sets binding points via `glUniformBlockBinding`
+(txmmgr.cpp calls gos_SetRenderMaterialUniformBlockBindingPoint every render).
+This answers OQ-3: the port needs nothing beyond 4.1 + those bindings.
+
+**Apple GLSL strictness trio** → (1) `const float x = ubo_member;` — const
+locals need constant expressions before GLSL 420 → dropped const. (2)
+`uint & 0x00ffffff` — hex literal is signed int, no implicit conversion in
+`&` → `u` suffix. (3) link error "fragment input 'CameraPos' not written by
+vertex shader" — upstream had commented out the write (undefined behavior that
+other drivers tolerate) → write `g_scene.cameraPos.xyz`, the clearly intended
+value.
+
+Result: engine boots, audio opens (22050 Hz stereo), all shaders compile and
+link, main loop runs until killed. Visual verification of the main menu:
+pending user eyes.
+
+Deployment recipe (until scripted): game dir needs mc2, libmc2res_64.dylib,
+shaders/, 8 .fst, *.cfg + testtxm.tga from mc2srcdata/root, data/, assets/.
+
 ## 2026-07-16 — M0: first native Apple Silicon build (clean `cmake -B build && cmake --build build`)
 
 Vendoring alariq/mc2 @ 35af1c2 and getting it to compile on macOS ARM64 took
