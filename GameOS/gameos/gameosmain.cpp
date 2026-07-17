@@ -30,6 +30,7 @@ extern void gos_DestroyAudio();
 
 static bool g_exit = false;
 static bool g_focus_lost = false;
+extern bool g_gos_focus_lost_dbg; // MC2_DEBUG_INPUT dump in gameos_input.cpp
 #if 0
 static camera g_camera;
 #endif
@@ -51,7 +52,11 @@ static void set_mouse_capture(bool enabled)
 {
     graphics::RenderWindowHandle win = gos_GetWindow();
     bool fullscreen = graphics::is_window_fullscreen(win);
-    SDL_bool capture = (enabled /*&& fullscreen*/) ? SDL_TRUE : SDL_FALSE;
+    // only confine the OS cursor in fullscreen: in windowed mode a grab
+    // makes the window chrome unreachable, and SDL's confinement rect
+    // goes stale when the window is resized (800x600 menus -> mission
+    // resolution), caging the cursor in a menu-sized box
+    SDL_bool capture = (enabled && fullscreen) ? SDL_TRUE : SDL_FALSE;
     graphics::grab_window(win, (bool)capture);
 
     SDL_CaptureMouse(capture);
@@ -64,6 +69,14 @@ static void process_events( void ) {
 
     SDL_Event event;
     while( SDL_PollEvent( &event ) ) {
+
+        // quit requests (Cmd-Q, SIGINT from ctrl-c, window close button)
+        // must work even while the window doesn't have focus
+        if(event.type == SDL_QUIT ||
+           (event.type == SDL_WINDOWEVENT && event.window.event == SDL_WINDOWEVENT_CLOSE)) {
+            g_exit = true;
+            continue;
+        }
 
         if(g_focus_lost) {
             if(event.type != SDL_WINDOWEVENT || event.window.event != SDL_WINDOWEVENT_FOCUS_GAINED) {
@@ -102,14 +115,26 @@ static void process_events( void ) {
                         SDL_GL_GetDrawableSize(wnd,
                             &Environment.drawableWidth, &Environment.drawableHeight);
                     }
+
+                    // re-apply the mouse capture so a fullscreen grab's
+                    // confinement rect tracks the new window size
+                    set_mouse_capture(!g_focus_lost);
                     break;
                 }
                 case SDL_WINDOWEVENT_FOCUS_LOST:
+                    if (getenv("MC2_DEBUG_INPUT")) {
+                        printf("[FOCUSDBG] t=%u FOCUS_LOST\n", SDL_GetTicks()); fflush(stdout);
+                    }
                     g_focus_lost = true;
+                    g_gos_focus_lost_dbg = true;
                     set_mouse_capture(false);
                     break;
                 case SDL_WINDOWEVENT_FOCUS_GAINED:
+                    if (getenv("MC2_DEBUG_INPUT")) {
+                        printf("[FOCUSDBG] t=%u FOCUS_GAINED\n", SDL_GetTicks()); fflush(stdout);
+                    }
                     g_focus_lost = false;
+                    g_gos_focus_lost_dbg = false;
                     set_mouse_capture(true);
                     break;
             }
