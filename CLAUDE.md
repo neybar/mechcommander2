@@ -2,7 +2,8 @@
 
 A cross-platform rebuild of MechCommander 2 (FASA Interactive / Microsoft, 2001),
 targeting **macOS (Apple Silicon) first**, then Linux and Windows. Based on the
-2006 Microsoft shared-source release, via the community OpenGL port.
+2006 Microsoft shared-source release, via alariq's OpenGL port (a
+single-maintainer project — see Key decisions).
 
 See `docs/PROJECT_BRIEF.md` for vision and goals, `docs/TECHNICAL_NOTES.md` for
 architecture decisions and codebase evaluation, and `docs/ROADMAP.md` for milestones.
@@ -11,21 +12,31 @@ architecture decisions and codebase evaluation, and `docs/ROADMAP.md` for milest
 
 **M0 and M1 complete (2026-07-17): the game is playable on macOS ARM64.**
 Missions load and play start-to-finish (movement, combat, win triggers,
-campaign progression user-verified on Training 1 & 2). Game dir:
-`~/Games/mc2-port` (built from mc2srcdata; deployment recipe in
-ENGINEERING_LOG — note `data/missions/` and `data/campaign/` must be
-unpacked on disk). Unattended testing: `MC2_AUTOQUIT_SECS=N ./mc2 -mission
-mc2_01` boots straight into a mission and quits cleanly after N seconds.
+campaign progression user-verified on Training 1 & 2). Windowed mode
+(`b FullScreen = FALSE` in options.cfg) and in-game resolution switching
+work; menus stay 800x600 by design, chosen resolution applies at mission
+load. Game dir: `~/Games/mc2-port` (built from mc2srcdata; deployment
+recipe in ENGINEERING_LOG — note `data/missions/` and `data/campaign/`
+must be unpacked on disk).
 
-Next: M2 (Vulkan renderer). Before starting it: set up the private GitHub
-remote (main has no backup); AD-4 (asset-dir config + friendly
-missing-assets message) carried forward from M1.
+Dev hooks: `MC2_AUTOQUIT_SECS=N` (clean quit after N secs),
+`./mc2 -mission mc2_01` (skip menus/logistics, quickstart lance),
+`MC2_DEBUG_INPUT=1` (per-second mouse coordinate-chain dump).
+
+Next: M2 (Vulkan renderer), starting with the renderer abstraction audit
+(gos/MLR boundary — where does a Vulkan backend plug in). GitHub remote
+deferred by user (still no backup — revisit). Carried forward: AD-4
+(asset-dir config + friendly missing-assets message); minor: clamp
+resolution requests to usable display bounds.
 
 ## Key decisions (context for all work)
 
-- **Base codebase:** fork of [alariq/mc2](https://github.com/alariq/mc2) — the
-  community port that already replaced DirectX with OpenGL and runs on
-  Windows/Linux 64-bit with SDL2 + CMake.
+- **Base codebase:** fork of [alariq/mc2](https://github.com/alariq/mc2),
+  which already replaced DirectX with OpenGL and runs on Windows/Linux
+  64-bit with SDL2 + CMake. Note it is one person's work, not a "community
+  port" — there is no community behind it, and no guarantee of continued
+  upstream development. That fragility was a foundational motivation for
+  forking it as an independent base rather than depending on it.
 - **Graphics:** port the renderer to **Vulkan**, using **MoltenVK** on macOS.
   OpenGL is deprecated on macOS; Vulkan gives one modern backend for all three
   platforms. Interim: macOS's OpenGL 4.1 may be used to get a first boot before
