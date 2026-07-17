@@ -6,6 +6,40 @@ Newest entries at the top. Practice borrowed from the
 
 ---
 
+## 2026-07-16 — M1: menu fully interactive; exit crash and "black background" resolved
+
+**Mouse could not move past the middle of the screen** → SDL mouse events are
+in window points; the engine normalizes cursor position against the drawable
+size in pixels (2x on Retina), so the cursor topped out at exactly 50% per
+axis → convert coords and deltas to pixel space at capture time
+(gos_input.cpp) using the window-to-drawable ratio. Upstream never sees this
+because points == pixels on their platforms.
+
+**SIGTRAP on exit (Apple crash dialog)** → the lldb disassembly showed
+`GOSImagePool::~GOSImagePool` complete-object destructor (D1) compiled to a
+single `brk #1`. GOSImagePool is abstract (pure LoadImage) with a
+**non-virtual destructor**, and MLRTexturePool does `delete imagePool` through
+the base pointer — which statically calls the abstract class's D1. Apple's
+toolchain emits a trap for that impossible symbol; on Linux it "works" and
+silently skips the derived destructor. Fix: make the destructor virtual.
+Original-2001 bug, present upstream too. Repro was fully automated with a new
+dev hook: env var `MC2_AUTOQUIT_SECS=N` drives the normal quit path after N
+seconds (kept for future smoke tests).
+
+**Menu background stays black for 10–15 s** → NOT a bug. Profiling showed the
+game idle at vsync (nothing loading); per-second state instrumentation showed
+`SplashIntro.animObjects[0]` running for ~12 s after the intro movie. The
+animation data (`art/mcl_splashscreenintro.fit`, "rectfade") deliberately
+holds opaque black until t=8 then fades out by t=11 — the original designers'
+reveal, comment in the file confirms. Feels broken only because the port
+skips the retail FASA/intro cinematics that used to fill that gap. Escape
+skips it (existing code path). If it still annoys later: candidate for an
+opt-in "fast boot" tweak, not an engine change.
+
+**Also fixed:** `gos_GetHiResTime` divided nanoseconds by 10.0e+9 instead of
+1.0e+9 (sub-second time ran at 1/10 speed); only test code consumes it today,
+but it was a landmine.
+
 ## 2026-07-16 — M1: first boot on macOS (engine runs, shaders compile clean)
 
 Game data: built entirely from alariq's mc2srcdata repo using our arm64-built

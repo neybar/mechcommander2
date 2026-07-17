@@ -184,7 +184,19 @@ int main(int argc, char** argv)
     graphics::RenderWindowHandle win = gos_GetWindow();
     graphics::RenderContextHandle ctx = gos_GetRenderContext();
 
+    // dev/smoke-test hook: MC2_AUTOQUIT_SECS=N drives the normal quit path
+    // (same as closing the window) after N seconds
+    double autoquit_secs = 0.0;
+    if (const char* aq = getenv("MC2_AUTOQUIT_SECS"))
+        autoquit_secs = atof(aq);
+    const uint64_t loop_start_tick = timing::gettickcount();
+
     while( !g_exit ) {
+
+        if (autoquit_secs > 0.0 &&
+            timing::ticks2sec(timing::gettickcount() - loop_start_tick) > autoquit_secs) {
+            g_exit = true;
+        }
 
 		uint64_t start_tick = timing::gettickcount();
 

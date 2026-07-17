@@ -110,7 +110,7 @@ double __stdcall gos_GetHiResTime()
 #ifdef PLATFORM_LINUX
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
-    double time_sec = ts.tv_sec + ((double)ts.tv_nsec)/10.0e+9;
+    double time_sec = ts.tv_sec + ((double)ts.tv_nsec)/1.0e+9;
     return time_sec;
 #else
 	return ((double)timeGetTime()) * 0.001;

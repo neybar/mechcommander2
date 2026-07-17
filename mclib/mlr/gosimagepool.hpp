@@ -21,7 +21,12 @@ namespace MidLevelRenderer {
 	//
 	public:
 		GOSImagePool();
-		~GOSImagePool();
+		// virtual: this class is abstract (pure LoadImage) and is deleted
+		// through a base pointer (MLRTexturePool dtor); Apple's toolchain
+		// emits a trap for an abstract class's complete-object destructor,
+		// so the non-virtual delete crashed at shutdown (and silently
+		// skipped the derived destructor everywhere else)
+		virtual ~GOSImagePool();
 
 	//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 	// Image handling
