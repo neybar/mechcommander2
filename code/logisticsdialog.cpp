@@ -515,6 +515,18 @@ void LogisticsSaveDialog::beginCampaign()
 }
 
 
+bool LogisticsSaveDialog::isInGameList( const char* pFileName )
+{
+	for ( int i = 0; i < gameListBox.GetItemCount(); i++ )
+	{
+		aLocalizedListItem* pItem = (aLocalizedListItem*)gameListBox.GetItem( i );
+		if ( pItem && 0 == S_stricmp( pItem->getHiddenText(), pFileName ) )
+			return true;
+	}
+
+	return false;
+}
+
 void LogisticsSaveDialog::initDialog( const char* path, bool bCampaign )
 {
 	gameListBox.removeAllItems( true );
@@ -572,7 +584,9 @@ void LogisticsSaveDialog::initDialog( const char* path, bool bCampaign )
 		path.init( campaignPath, "campaign", ".fit" );
 
 		//All of this will work in the fastfiles.
-		if (fileExists(path))
+		// Skip any the directory scan above already found on disk,
+		// otherwise they show up in the list twice.
+		if (fileExists(path) && !isInGameList("campaign"))
 		{
 			aLocalizedListItem* pEntry = new aLocalizedListItem();
 			*pEntry = s_instance->templateItem;
@@ -586,9 +600,9 @@ void LogisticsSaveDialog::initDialog( const char* path, bool bCampaign )
 		}
 
 		path.init(campaignPath, "tutorial", ".fit" );
-			
+
 		//All of this will work in the fastfiles.
-		if (fileExists(path))
+		if (fileExists(path) && !isInGameList("tutorial"))
 		{
 			aLocalizedListItem* pEntry = new aLocalizedListItem();
 			*pEntry = s_instance->templateItem;

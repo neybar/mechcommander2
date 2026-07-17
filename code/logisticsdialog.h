@@ -175,6 +175,7 @@ class LogisticsSaveDialog : public LogisticsDialog
 		EString		selectedName;
 
 		void	initDialog(const char* path, bool bCampaign);
+		bool	isInGameList(const char* pFileName);
 		void	updateCampaignMissionInfo();
 		void	setMission( const char* path );
 		void	readCampaignNameFromFile(const char* fileName, char* resultName, long len );
