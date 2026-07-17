@@ -1,5 +1,5 @@
-#include "utils/graphics.h"
-#include "utils/render_constants.h"
+#include "graphics.h"
+#include "render_constants.h"
 
 const int ZERO                 = GL_ZERO;
 const int ONE                  = GL_ONE;

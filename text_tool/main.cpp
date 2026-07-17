@@ -10,8 +10,8 @@
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_ttf.h>
 #include "utils/camera.h"
-#include "utils/shader_builder.h"
-#include "utils/gl_utils.h"
+#include "rendergl/shader_builder.h"
+#include "rendergl/gl_utils.h"
 
 static const uint32_t NUM_GLYPHS = 255 - 32;
 static const uint32_t START_GLYPH = 32;

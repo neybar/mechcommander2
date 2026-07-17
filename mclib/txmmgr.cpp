@@ -47,7 +47,6 @@
 #include<gameos.hpp>
 #include<mlr/mlr.hpp>
 #include<gosfx/gosfxheaders.hpp>
-#include <utils/gl_utils.h>
 
 //---------------------------------------------------------------------------
 // static globals

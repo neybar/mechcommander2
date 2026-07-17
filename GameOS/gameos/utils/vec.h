@@ -549,6 +549,12 @@ mat4 scale4(const float x, const float y, const float z);
 
 typedef ivec4 int4;
 
+// 0xAABBGGRR packed color <-> vec4, renderer-independent (used above the
+// gos_* API by txmmgr and by backend code)
+#include <stdint.h>
+uint32_t vec4_to_uint32(const vec4& v);
+vec4 uint32_to_vec4(uint32_t v);
+
 typedef mat2 float2x2;
 typedef mat3 float3x3;
 typedef mat4 float4x4;

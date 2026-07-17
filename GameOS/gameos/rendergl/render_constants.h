@@ -6,7 +6,7 @@
 #endif
 #include <inttypes.h>
 
-#include "utils/graphics.h"
+#include "graphics.h"
 
 #define DEPTH_NONE 0        /**< Disable depthstencil. */
 #define BLEND_NONE (-1)     /**< Disable blending. */
