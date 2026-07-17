@@ -77,8 +77,12 @@ void __stdcall gos_GetMouseInfo( float* pXPosition, float* pYPosition, int* pXDe
 extern SDL_Window* g_sdl_window;
 void __stdcall gos_SetMousePosition( float XPosition, float YPosition )
 {
+    // per the GOS API the position is normalized 0..1;
+    // SDL_WarpMouseInWindow wants window points
     if(g_sdl_window) {
-        SDL_WarpMouseInWindow(g_sdl_window, (int)XPosition, (int)YPosition);
+        int w = 0, h = 0;
+        SDL_GetWindowSize(g_sdl_window, &w, &h);
+        SDL_WarpMouseInWindow(g_sdl_window, (int)(XPosition * (float)w), (int)(YPosition * (float)h));
     }
 }
 

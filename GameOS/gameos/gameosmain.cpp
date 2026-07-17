@@ -91,6 +91,17 @@ static void process_events( void ) {
                     float w = (float)event.window.data1;(void)w;
                     float h = (float)event.window.data2;(void)h;
                     SPEW(("INPUT", "resize event: w: %f h:%f\n", w, h));
+
+                    // the window's real size can diverge from what
+                    // gos_SetScreenMode requested (macOS clamps oversized
+                    // windows, Cocoa resizes asynchronously, the user can
+                    // drag-resize) — refresh the drawable size here or mouse
+                    // normalization and glViewport keep using the stale one
+                    SDL_Window* wnd = SDL_GetWindowFromID(event.window.windowID);
+                    if (wnd) {
+                        SDL_GL_GetDrawableSize(wnd,
+                            &Environment.drawableWidth, &Environment.drawableHeight);
+                    }
                     break;
                 }
                 case SDL_WINDOWEVENT_FOCUS_LOST:
