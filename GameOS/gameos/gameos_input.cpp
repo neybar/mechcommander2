@@ -27,6 +27,8 @@
 // You may pass zero as any parameter you do not wish to query
 //
 ////////////////////////////////////////////////////////////////////////////////
+extern SDL_Window* g_sdl_window;
+bool g_gos_focus_lost_dbg = false; // mirrored from gameosmain for MC2_DEBUG_INPUT
 void __stdcall gos_GetMouseInfo( float* pXPosition, float* pYPosition, int* pXDelta, int* pYDelta, int* pWheelDelta, DWORD* pButtonsPressed )
 {
     //const float w = (float)Environment.screenWidth;
@@ -36,6 +38,35 @@ void __stdcall gos_GetMouseInfo( float* pXPosition, float* pYPosition, int* pXDe
     const float h = (float)Environment.drawableHeight;
 
     const input::MouseInfo* mi = input::getMouseInfo();
+
+    // MC2_DEBUG_INPUT=1: dump the whole mouse-coordinate chain once a second
+    static const bool dbg = getenv("MC2_DEBUG_INPUT") != NULL;
+    if (dbg) {
+        static Uint32 lastDump = 0;
+        Uint32 now = SDL_GetTicks();
+        if (now - lastDump > 1000) {
+            lastDump = now;
+            int ww = 0, wh = 0, dw = 0, dh = 0;
+            if (g_sdl_window) {
+                SDL_GetWindowSize(g_sdl_window, &ww, &wh);
+                SDL_GL_GetDrawableSize(g_sdl_window, &dw, &dh);
+            }
+            float vmx = 0, vmy = 0, vax = 0, vay = 0;
+            gos_GetViewport(&vmx, &vmy, &vax, &vay);
+            int gx = 0, gy = 0;
+            SDL_GetGlobalMouseState(&gx, &gy);
+            printf("[MOUSEDBG] envScreen=%dx%d envDrawable=%dx%d sdlWin=%dx%d sdlDrawable=%dx%d "
+                   "viewMul=%.0f,%.0f viewAdd=%.0f,%.0f mi=%.0f,%.0f norm=%.3f,%.3f "
+                   "focusLost=%d osMouse=%d,%d grab=%d\n",
+                   (int)Environment.screenWidth, (int)Environment.screenHeight,
+                   (int)Environment.drawableWidth, (int)Environment.drawableHeight,
+                   ww, wh, dw, dh, vmx, vmy, vax, vay,
+                   mi->x_, mi->y_, mi->x_ / w, mi->y_ / h,
+                   (int)g_gos_focus_lost_dbg, gx, gy,
+                   g_sdl_window ? (int)SDL_GetWindowGrab(g_sdl_window) : -1);
+            fflush(stdout);
+        }
+    }
 
     if(pXPosition)
         *pXPosition = mi->x_ / w;
@@ -77,8 +108,12 @@ void __stdcall gos_GetMouseInfo( float* pXPosition, float* pYPosition, int* pXDe
 extern SDL_Window* g_sdl_window;
 void __stdcall gos_SetMousePosition( float XPosition, float YPosition )
 {
+    // per the GOS API the position is normalized 0..1;
+    // SDL_WarpMouseInWindow wants window points
     if(g_sdl_window) {
-        SDL_WarpMouseInWindow(g_sdl_window, (int)XPosition, (int)YPosition);
+        int w = 0, h = 0;
+        SDL_GetWindowSize(g_sdl_window, &w, &h);
+        SDL_WarpMouseInWindow(g_sdl_window, (int)(XPosition * (float)w), (int)(YPosition * (float)h));
     }
 }
 

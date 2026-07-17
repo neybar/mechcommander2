@@ -391,15 +391,31 @@ void OptionsGraphics::init(long xOffset, long yOffset)
     gosASSERT(!resolutionModes && !resolutionModesStr);
     resolutionModes = new ResModes[num_modes];
     resolutionModesStr = new char*[num_modes];
-    numResolutionModes = num_modes;
-
+    numResolutionModes = 0;
 
 	for ( int i = 0; i < num_modes; i++ ) {
-        gos_GetDisplayModeByIndex(displayIndex, i, &resolutionModes[i].xRes, &resolutionModes[i].yRes, &resolutionModes[i].bitDepth);
+        ResModes mode;
+        gos_GetDisplayModeByIndex(displayIndex, i, &mode.xRes, &mode.yRes, &mode.bitDepth);
 
-        resolutionModesStr[i] = new char[256];
-        S_snprintf(resolutionModesStr[i], 256, "%dx%dx%d", resolutionModes[i].xRes, resolutionModes[i].yRes, resolutionModes[i].bitDepth);
-        resolutionList.AddItem( resolutionModesStr[i], 0xffffffff );
+        // SDL lists one mode per refresh rate; the game only cares about
+        // size and depth, so collapse the duplicates
+        bool bAlreadyListed = false;
+        for ( int j = 0; j < numResolutionModes; j++ ) {
+            if ( resolutionModes[j].xRes == mode.xRes &&
+                 resolutionModes[j].yRes == mode.yRes &&
+                 resolutionModes[j].bitDepth == mode.bitDepth ) {
+                bAlreadyListed = true;
+                break;
+            }
+        }
+        if ( bAlreadyListed )
+            continue;
+
+        resolutionModes[numResolutionModes] = mode;
+        resolutionModesStr[numResolutionModes] = new char[256];
+        S_snprintf(resolutionModesStr[numResolutionModes], 256, "%dx%dx%d", mode.xRes, mode.yRes, mode.bitDepth);
+        resolutionList.AddItem( resolutionModesStr[numResolutionModes], 0xffffffff );
+        numResolutionModes++;
     }
 
     /*
@@ -672,11 +688,35 @@ void OptionsGraphics::reset(const CPrefs& newPrefs)
     // find index of mode
     int index = -1;
     for(int i=0;i<numResolutionModes;++i) {
-        if( resolutionModes[i].xRes == newPrefs.resolutionX && 
-            resolutionModes[i].yRes == newPrefs.resolutionY && 
+        if( resolutionModes[i].xRes == newPrefs.resolutionX &&
+            resolutionModes[i].yRes == newPrefs.resolutionY &&
             resolutionModes[i].bitDepth == newPrefs.bitDepth) {
             index = i;
             break;
+        }
+    }
+
+    // no exact match (legacy prefs store 16bit depths the mode list
+    // doesn't have): match on size alone
+    for(int i=0; index==-1 && i<numResolutionModes; ++i) {
+        if( resolutionModes[i].xRes == newPrefs.resolutionX &&
+            resolutionModes[i].yRes == newPrefs.resolutionY) {
+            index = i;
+        }
+    }
+
+    // still nothing: show the mode closest in area to the configured
+    // resolution, not item 0 (SDL sorts modes largest-first, so item 0
+    // is the display's maximum — misleading as a "current" selection)
+    if( index == -1 && numResolutionModes > 0 ) {
+        long want = (long)newPrefs.resolutionX * (long)newPrefs.resolutionY;
+        long bestDiff = -1;
+        for(int i=0;i<numResolutionModes;++i) {
+            long diff = labs((long)resolutionModes[i].xRes * (long)resolutionModes[i].yRes - want);
+            if( bestDiff < 0 || diff < bestDiff ) {
+                bestDiff = diff;
+                index = i;
+            }
         }
     }
 

@@ -265,6 +265,11 @@ int CPrefs::load( const char* pFileName ) {
 			if ( result != NO_ERR )
 				bitDepth = 32;
 
+			// retail-era configs store an index here (0=16bit, 1=32bit),
+			// not a bit depth — translate so mode matching works
+			if ( bitDepth != 16 && bitDepth != 32 )
+				bitDepth = bitDepth ? 32 : 16;
+
 			if (bitDepth && (renderer == 3))
 				bitDepth = 16;
 
