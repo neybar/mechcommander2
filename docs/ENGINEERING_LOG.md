@@ -8,10 +8,12 @@ Newest entries at the top. Practice borrowed from the
 
 ## 2026-07-17 — M2: fullscreen boots stale at 800x600 on Vulkan (exclusive fullscreen + macOS spaces)
 
-First user playthrough on the vk build hit two symptoms at once: the FMV
+First user playthrough on the vk build hit three symptoms at once: the FMV
 intro and main menu drew as an 800x600 patch inside an otherwise-black
-fullscreen (self-healed after an alt-tab), and the OS cursor stayed visible
-alongside the game's drawn cursor.
+fullscreen (self-healed after an alt-tab), the OS cursor stayed visible
+alongside the game's drawn cursor, and going fullscreen blanked the user's
+second monitor and rearranged every window on the desktop (macOS did not
+restore the layout afterward).
 
 One root cause. The vk backend's `set_window_fullscreen` used **exclusive
 `SDL_WINDOW_FULLSCREEN`** where the GL path deliberately uses
@@ -22,8 +24,14 @@ surface: the CAMetalLayer — and thus the swapchain — stays 800x600, and
 because no `SIZE_CHANGED` event fires, `set_mouse_capture` never re-runs, so
 `SDL_ShowCursor(SDL_DISABLE)` is never re-asserted either. Alt-tab forces
 the space transition to settle, which finally emits the resize → drawable
-refresh + swapchain recreate → everything snaps correct. Desktop fullscreen
-resizes the window immediately and the whole chain fires on its own.
+refresh + swapchain recreate → everything snaps correct. The monitor
+blanking is the same flag one layer up: exclusive fullscreen performs a
+real display mode switch (800x600), which macOS treats as a display
+reconfiguration — secondary displays blank during capture and every
+desktop window is re-laid-out against the new geometry, and macOS is bad
+at putting them back. Desktop fullscreen resizes the window immediately
+(the whole event chain fires on its own), never touches the display mode,
+and behaves like the green zoom button — other monitors unaffected.
 
 Fixed by matching the GL path's proven window contract in
 `rendervk/gos_render.cpp`: `SDL_WINDOW_FULLSCREEN_DESKTOP`, re-center on
