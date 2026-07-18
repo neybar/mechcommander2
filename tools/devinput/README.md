@@ -13,6 +13,25 @@ have **Accessibility** permission in System Settings → Privacy & Security.
 app is frontmost receives them — always announce before running one, per
 [[feedback-announce-machine-control]].
 
+**The target app must actually be frontmost, not just visually on top.**
+Desktop-fullscreen (`SDL_WINDOW_FULLSCREEN_DESKTOP`, what this game uses)
+covers the screen without forcing macOS app-activation — launching the
+game from a terminal leaves the terminal as the frontmost app even though
+you can't see it. Cursor *position* tracking works globally regardless of
+focus (the game's own `MC2_DEBUG_INPUT` log will show `osMouse` updating
+correctly), which can mislead you into thinking clicks should land — but
+`mouseDown`/`mouseUp` and key events are only delivered to whichever app
+is actually frontmost. Activate it first:
+
+```sh
+osascript -e 'tell application "System Events" to set frontmost of process "mc2-vk" to true'
+```
+
+Symptom if you skip this: `clickat` visibly moves the cursor to the right
+spot (confirmed via screenshot and the game's own mouse-debug log) but
+the click has no effect — easy to misdiagnose as a coordinate-math bug
+when it's actually a focus problem.
+
 ## Build
 
 Each is a single-file Swift script; compile with `swiftc`:

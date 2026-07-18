@@ -6,6 +6,40 @@ Newest entries at the top. Practice borrowed from the
 
 ---
 
+## 2026-07-18 — Solo Mission screen verified on Vulkan (task 5, PASS); devinput focus gotcha found
+
+First test of the "Solo Mission" flow (main menu's `SOLO MISSION` button →
+`MM_MSG_SINGLE_MISSION` → `singleLoadDlg.beginSingleMission()`, an
+`MPLoadMap` dialog) since M1, and its first test ever on the Vulkan
+backend. Driven live with the `tools/devinput` clickat tool rather than
+`-mission` quickstart, since the point was to exercise the menu/dialog
+chain itself. Full chain verified clean: main menu → Solo Mission → map
+list (all missions populated, thumbnails render correctly, no
+corruption) → select a mission (Scouting Patrol) → description/preview
+updates correctly → Accept → Mission Briefing (objectives text, VIDCOM
+map, hangar art all render) → Next → 'Mech Bay logistics (empty
+deployment team, as expected for a fresh solo entry — no canned lance
+the way `-mission` quickstart provides) → Main Menu button backs out
+cleanly → reopening Solo Mission shows the same list with no
+duplication (the regression class the M1-era campaign-list bug was) →
+in-game Exit → Yes quit confirmation → clean process exit, no crash.
+
+**Methodology gotcha, now documented in `tools/devinput/README.md`:**
+clicks silently failed to register even when the cursor was screenshot-
+and log-confirmed to be exactly on the right button. Cause: the game
+runs in `SDL_WINDOW_FULLSCREEN_DESKTOP`, which covers the screen without
+forcing macOS app-activation — the terminal that launched it stayed the
+frontmost app. Cursor *position* tracking is global regardless of focus
+(misleading — `MC2_DEBUG_INPUT`'s `osMouse`/`norm` updated correctly),
+but click/key delivery requires the target actually be frontmost. Fix:
+`osascript -e 'tell application "System Events" to set frontmost of
+process "mc2-vk" to true'` before each click. Also learned live from the
+user: the cursor's hit-tested point is its tip, not its visual center —
+confirm via the button's hover-highlight (side arrows + darker fill)
+before trusting a click coordinate, don't just eyeball the sprite.
+
+---
+
 ## 2026-07-18 — vk resolution/fullscreen test matrix: intermittent shutdown SIGSEGV found (OPEN), resolution-mismatch theory ruled out
 
 Task 3 from the credit plan: scripted windowed/fullscreen × resolution
