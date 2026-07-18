@@ -25,6 +25,9 @@ data-orig
 assets
 ABLT
 Tools
+!/tools/
+!/tools/devinput/
+!/tools/devinput/**
 .codelite
 *.session
 *.log
