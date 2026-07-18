@@ -6,6 +6,39 @@ Newest entries at the top. Practice borrowed from the
 
 ---
 
+## 2026-07-17 — M2: fullscreen boots stale at 800x600 on Vulkan (exclusive fullscreen + macOS spaces)
+
+First user playthrough on the vk build hit two symptoms at once: the FMV
+intro and main menu drew as an 800x600 patch inside an otherwise-black
+fullscreen (self-healed after an alt-tab), and the OS cursor stayed visible
+alongside the game's drawn cursor.
+
+One root cause. The vk backend's `set_window_fullscreen` used **exclusive
+`SDL_WINDOW_FULLSCREEN`** where the GL path deliberately uses
+`SDL_WINDOW_FULLSCREEN_DESKTOP` (its source even carries the commented-out
+rejected alternative). On macOS, exclusive fullscreen on an 800x600 window
+enters a fullscreen space but SDL never delivers the resize that grows the
+surface: the CAMetalLayer — and thus the swapchain — stays 800x600, and
+because no `SIZE_CHANGED` event fires, `set_mouse_capture` never re-runs, so
+`SDL_ShowCursor(SDL_DISABLE)` is never re-asserted either. Alt-tab forces
+the space transition to settle, which finally emits the resize → drawable
+refresh + swapchain recreate → everything snaps correct. Desktop fullscreen
+resizes the window immediately and the whole chain fires on its own.
+
+Fixed by matching the GL path's proven window contract in
+`rendervk/gos_render.cpp`: `SDL_WINDOW_FULLSCREEN_DESKTOP`, re-center on
+return to windowed, `is_window_fullscreen` tests both fullscreen flags, and
+`SDL_WINDOW_ALLOW_HIGHDPI` at window creation — the vk surface had been
+running at Retina *points* (half resolution, silently upscaled); with the
+flag the swapchain runs at native pixels like GL. Mouse math is unaffected:
+`handleMouseMotion` already scales points→drawable by ratio, which was 1.0
+before and 2.0 now, same as GL.
+
+Lesson: the GL backend's window/SDL glue encodes years of platform fixes —
+when writing a second backend, diff the *flags and call order* against it,
+not just the rendering. (Same lesson as the texture-contract bugs below,
+one layer down.)
+
 ## 2026-07-17 — M2: missions render on Vulkan (retained path complete)
 
 The mech-mesh path (lighted materials + lights/scene UBOs), FMV YCbCr, and

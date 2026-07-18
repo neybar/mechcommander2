@@ -114,7 +114,7 @@ RenderWindowHandle create_window(const char* pwinname, int width, int height,
             SDL_WINDOWPOS_CENTERED_DISPLAY(display_index),
             SDL_WINDOWPOS_CENTERED_DISPLAY(display_index),
             width, height,
-            SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE);
+            SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
     if(!win) {
         fprintf(stderr, "[VK] SDL_CreateWindow failed: %s\n", SDL_GetError());
         return NULL;
@@ -134,7 +134,6 @@ bool resize_window(RenderWindowHandle rw_handle, int width, int height)
     RenderWindow* rw = (RenderWindow*)rw_handle;
     assert(rw);
     SDL_SetWindowSize(rw->window_, width, height);
-    SDL_SetWindowPosition(rw->window_, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
     rw->width_ = width;
     rw->height_ = height;
     if(g_ctx)
@@ -174,8 +173,16 @@ bool set_window_fullscreen(RenderWindowHandle rw_handle, bool fullscreen)
 {
     RenderWindow* rw = (RenderWindow*)rw_handle;
     assert(rw);
+    // desktop fullscreen, same as the GL path: exclusive SDL_WINDOW_FULLSCREEN
+    // on macOS leaves the surface at the old window size (no resize event
+    // fires), so the swapchain stays stale until an alt-tab settles the space
     int rv = SDL_SetWindowFullscreen(rw->window_,
-            fullscreen ? SDL_WINDOW_FULLSCREEN : 0);
+            fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
+    if(rv == 0 && !fullscreen) {
+        int i = SDL_GetWindowDisplayIndex(rw->window_);
+        SDL_SetWindowPosition(rw->window_,
+                SDL_WINDOWPOS_CENTERED_DISPLAY(i), SDL_WINDOWPOS_CENTERED_DISPLAY(i));
+    }
     if(g_ctx)
         g_ctx->swapchain_dirty_ = true;
     return rv == 0;
@@ -185,7 +192,8 @@ bool is_window_fullscreen(RenderWindowHandle rw_handle)
 {
     RenderWindow* rw = (RenderWindow*)rw_handle;
     assert(rw);
-    return (SDL_GetWindowFlags(rw->window_) & SDL_WINDOW_FULLSCREEN) != 0;
+    return (SDL_GetWindowFlags(rw->window_)
+            & (SDL_WINDOW_FULLSCREEN | SDL_WINDOW_FULLSCREEN_DESKTOP)) != 0;
 }
 
 bool is_mode_supported(int width, int height, int bpp)
