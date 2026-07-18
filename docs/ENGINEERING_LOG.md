@@ -6,6 +6,70 @@ Newest entries at the top. Practice borrowed from the
 
 ---
 
+## 2026-07-18 — vk resolution/fullscreen test matrix: intermittent shutdown SIGSEGV found (OPEN), resolution-mismatch theory ruled out
+
+Task 3 from the credit plan: scripted windowed/fullscreen × resolution
+matrix on `mc2-vk` using `-mission mc2_01` + `MC2_AUTOQUIT_SECS` +
+`screencapture`, options.cfg edited per-run (backed up first, restored
+after). Dev machine is a 6K Retina display (native 6016x3384 px /
+3008x1692 pt).
+
+**Real finding: intermittent SIGSEGV on clean autoquit shutdown, ~27%
+of runs (4/15), reproducing across every windowed and fullscreen config
+tested** — not resolution-specific. Same crash signature every time
+(confirmed via `.ips` in `~/Library/Logs/DiagnosticReports/`, symbolized
+with `atos`):
+
+```
+libSDL3.0.dylib (x6 frames) -> libSDL2-2.0.0.dylib (sdl2-compat shim)
+-> SoundEngine::destroy() (gameos_sound.cpp:272) -> gos_DestroyAudio()
+-> main (gameosmain.cpp)
+```
+
+`SoundEngine::destroy()` calls `Mix_HaltChannel` for every channel, then
+`gosAudio::destroyAudio` for each active sound, then
+`SDL_CloseAudioDevice` / `Mix_CloseAudio` / `Mix_Quit` /
+`SDL_QuitSubSystem(SDL_INIT_AUDIO)` — with no pause/lock around the
+audio callback first. Prime suspect: a teardown race between the main
+thread freeing sound state and SDL's audio callback thread still
+running against it, surfacing through the sdl2-compat→SDL3 shim.
+Affects the shared `GameOS/gameos/gameos_sound.cpp`, used by both GL
+and VK backends — not a Vulkan bug, just more visible under a scripted
+rapid launch/autoquit/relaunch loop. **Escalating to OPUS per the
+credit plan** (own root-cause hypothesis in hand, two backends share
+the code, worth a real fix rather than a triage guess).
+
+**Investigated and ruled out: visible rendering breakage from
+resolution/fullscreen mismatch.** `SDL_WINDOW_FULLSCREEN_DESKTOP`
+always snaps to the real desktop size regardless of the requested
+`ResolutionX`/`ResolutionY` (confirmed: `rendervk/gos_render.cpp`'s
+`set_window_fullscreen`), and `Environment.screenWidth/Height` (i.e.
+`g_width`/`g_height` in `rendervk/gameos_graphics.cpp`) is set from the
+*requested* resolution in `gos_RendererHandleEvents` and never
+reconciled against the real post-fullscreen drawable size — confirmed
+live via `MC2_DEBUG_INPUT=1`: `envScreen=800x600` stayed pinned while
+`sdlWin=3008x1692 sdlDrawable=6016x3384` (a deliberately extreme
+fullscreen-at-800x600 test). Despite that, screenshots across
+native/2048x1080(default)/800x600 fullscreen requests all show the 3D
+scene rendering correctly proportioned, full-frame, no letterboxing —
+it must project against the real swapchain extent, not the stale
+logical size. Mouse tracking also stays correct under the same
+mismatch: `MC2_DEBUG_INPUT`'s `norm` values scale off the real drawable
+size, not the stale `envScreen`, so the old cursor-cage bug does not
+reproduce here either. The stale `Environment.screenWidth/Height` is
+still live in `gos_GetViewport()`'s multiplier math (2D immediate-mode
+positioning) — no visible breakage observed in these screenshots, but
+untested for precise HUD/click-target alignment under a mismatched
+fullscreen config. Low priority given no observed symptom, but worth a
+one-line note if anyone touches that code path.
+
+Lesson: verify code-read hypotheses empirically before writing them up
+as bugs — the resolution-mismatch theory was plausible from the source
+alone, but screenshots and live mouse-debug output showed the actual
+render/input paths don't use the stale value the way I expected.
+
+---
+
 ## 2026-07-18 — Pre-GitHub asset audit: purged a real retail-data leak from history (FIXED)
 
 Before standing up the private GitHub remote (overdue backup), audited
