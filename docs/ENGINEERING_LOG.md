@@ -6,7 +6,7 @@ Newest entries at the top. Practice borrowed from the
 
 ---
 
-## 2026-07-17 — M2 (IN PROGRESS): textures swap content under churn on Vulkan — cursor "flashing", slab dock, wrong portraits
+## 2026-07-17 — M2: textures swap content under churn on Vulkan — descriptor-cache key collision (FIXED)
 
 User report from the first vk playthrough: the mouse cursor flashed
 between its icon, a semi-translucent blob, and invisible. Reproduced
@@ -37,12 +37,17 @@ deterministic within a frame — the first draw to populate the entry
 wins, every later collider silently renders with its texture — which
 matches the *stable* wrongness (slabs stay slabs) better than any race.
 
-Next experiment (edit staged): `MC2_VK_NO_DSET_CACHE=1` bypasses the
-cache lookup so every draw gets a freshly written descriptor set.
-Corruption gone ⇒ collision confirmed; the fix is to key the (already
-ordered) std::map on the actual tuple of handles instead of a folded
-hash. Corruption still there ⇒ next suspects are the ring-staged
-uploads in textureToGpu or a stale view written into a cached set.
+Confirmed by experiment: `MC2_VK_NO_DSET_CACHE=1` (fresh descriptor set
+per draw) made every symptom vanish under the same sweep. Fix: the
+cache map is now keyed on the exact binding tuple (sampler, 3 views,
+2 UBOs — a memcmp-ordered struct) instead of the folded hash. Sweep
+with the cache enabled verified clean: correct portraits, dock,
+minimap, cursor. The env toggle stays as a diagnostic.
+
+Lesson: never key a cache on a lossy hash of handles when the full
+tuple is only 48 bytes — a collision doesn't crash, it silently binds
+the wrong resource, and it's *deterministic*, so it masquerades as
+asset corruption rather than looking like the cache bug it is.
 
 ## 2026-07-17 — M2: fullscreen boots stale at 800x600 on Vulkan (exclusive fullscreen + macOS spaces)
 

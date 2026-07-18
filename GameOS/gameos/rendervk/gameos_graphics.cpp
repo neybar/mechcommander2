@@ -234,7 +234,17 @@ struct VkDrawEngine {
     bool ring_overflowed;
 
     VkDescriptorPool dpool;
-    std::map<uint64_t, VkDescriptorSet> dset_cache;
+    // keyed on the exact binding tuple — a folded hash collided under
+    // texture churn and silently bound the wrong texture (see ENGINEERING_LOG)
+    struct DsetKey {
+        VkSampler sampler;
+        VkImageView views[3];
+        VkBuffer ubos[2];
+        bool operator<(const DsetKey& o) const {
+            return memcmp(this, &o, sizeof(DsetKey)) < 0;
+        }
+    };
+    std::map<DsetKey, VkDescriptorSet> dset_cache;
 
     VkPipeline bound_pipeline;
 
@@ -809,14 +819,15 @@ VkDescriptorSet descriptorFor(VkImageView views[3], VkSampler sampler)
     VkBuffer ubo0 = (g_ubo_slots[0] && g_ubo_slots[0]->vk_buffer_) ? g_ubo_slots[0]->vk_buffer_ : g_eng.dummy_ubo;
     VkBuffer ubo1 = (g_ubo_slots[1] && g_ubo_slots[1]->vk_buffer_) ? g_ubo_slots[1]->vk_buffer_ : g_eng.dummy_ubo;
 
-    uint64_t key = (uint64_t)(uintptr_t)sampler;
+    VkDrawEngine::DsetKey key = {};
+    key.sampler = sampler;
     for(int i = 0; i < 3; ++i)
-        key = key * 31 + (uint64_t)(uintptr_t)(views[i] ? views[i] : g_eng.dummy_view);
-    key = key * 31 + (uint64_t)(uintptr_t)ubo0;
-    key = key * 31 + (uint64_t)(uintptr_t)ubo1;
+        key.views[i] = views[i] ? views[i] : g_eng.dummy_view;
+    key.ubos[0] = ubo0;
+    key.ubos[1] = ubo1;
 
     static const bool no_cache = getenv("MC2_VK_NO_DSET_CACHE") != NULL;
-    std::map<uint64_t, VkDescriptorSet>::iterator it = g_eng.dset_cache.find(key);
+    std::map<VkDrawEngine::DsetKey, VkDescriptorSet>::iterator it = g_eng.dset_cache.find(key);
     if(!no_cache && it != g_eng.dset_cache.end())
         return it->second;
 
