@@ -6,6 +6,44 @@ Newest entries at the top. Practice borrowed from the
 
 ---
 
+## 2026-07-18 — Pre-GitHub asset audit: purged a real retail-data leak from history (FIXED)
+
+Before standing up the private GitHub remote (overdue backup), audited
+every non-source/binary file ever tracked for accidental copyrighted
+game-data or needless bloat. Two problems, one real risk and one dead
+weight:
+
+`Viewer/mission.fst` (20MB, tracked in one commit) turned out to be
+actual retail game data, not a fixture: only ~1.3MB of it is readable
+strings, and those strings are `data\missions\mc2_NN.fit/.abl/.pak` for
+every campaign mission. `system.cfg`, committed alongside it, names
+`mission.fst` directly as one of the game's `[FastFiles]` bundles
+(`tgl.fst`, `art.fst`, `textures.fst`, etc. are the same format) —
+these are packed retail data archives, not anything Microsoft's
+shared-source drop ever included. Someone's local Viewer-tool test
+fixture, built from a real install, got committed by mistake.
+
+`3rdparty.zip` (22MB) is legitimate but irrelevant to us: prebuilt
+**Windows** binaries (SDL2/SDL2_mixer/SDL2_ttf/GLEW/zlib `.dll`/`.lib`/
+`.pdb`) for the legacy `.vcproj` Windows build. Zero references anywhere
+in our CMake files — it only ever fed the old Visual Studio project,
+which we don't build. If a future Windows CMake build ever needs these,
+get them from alariq's upstream or vendor via vcpkg; no reason to carry
+Windows binaries in a Mac-first fork.
+
+Also dropped `mclib/MCLib.aps` (26KB) — an auto-generated MSVC
+resource-compiler cache, pure clutter, no content of note.
+
+Fix: `git filter-repo --invert-paths` for all three paths, across all
+history (repo had no remote yet, so this was the one cheap opportunity
+before publishing — .git went 53M → 32M). Backed up the pre-filter
+history as a bundle outside the repo first. Added `3rdparty.zip` and
+`*.aps` to `.gitignore` so they can't silently return; `mission.fst`
+was already covered by the existing `*.fst` rule (it predated that
+rule, which is exactly how it got in).
+
+---
+
 ## 2026-07-17 — M2: textures swap content under churn on Vulkan — descriptor-cache key collision (FIXED)
 
 User report from the first vk playthrough: the mouse cursor flashed

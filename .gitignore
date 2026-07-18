@@ -86,3 +86,8 @@ compile_commands.json
 .cache/
 # user-provided game assets never enter git (see CLAUDE.md);
 # upstream's list above already ignores `data` and `assets`
+# legacy Windows-only vendored deps for the old .vcproj build; see
+# BUILDING.md / ENGINEERING_LOG for the alariq-upstream pointer
+3rdparty.zip
+# MSVC resource-compiler cache, always auto-generated
+*.aps
