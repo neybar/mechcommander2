@@ -57,8 +57,20 @@ find_package(SDL2 REQUIRED CONFIG REQUIRED COMPONENTS SDL2main)
 find_package(SDL2_mixer REQUIRED)
 #required by text_tool
 find_package(SDL2_ttf REQUIRED)
-find_package(GLEW REQUIRED)
-find_package(OpenGL REQUIRED)
+# Renderer backend selection (M2): GL is the default until the Vulkan
+# backend reaches parity. Everything above the gos_* API is backend-agnostic;
+# this only switches which GameOS/gameos/render*/ implementation is built in.
+set(MC2_RENDERER "GL" CACHE STRING "Render backend: GL or VULKAN")
+if(MC2_RENDERER STREQUAL "VULKAN")
+    find_package(Vulkan REQUIRED)
+    set(MC2_RENDER_LIBS Vulkan::Vulkan)
+    message("MC2 renderer: VULKAN (${Vulkan_LIBRARIES})")
+else()
+    find_package(GLEW REQUIRED)
+    find_package(OpenGL REQUIRED)
+    set(MC2_RENDER_LIBS GLEW::GLEW OpenGL::GL)
+    message("MC2 renderer: GL")
+endif()
 find_package(ZLIB REQUIRED)
 
 message("Found SDL2 package ${SDL2_LIBRARIES}" )
@@ -69,12 +81,7 @@ if(APPLE)
     # style includes need the SDL2 install prefix added explicitly
     include_directories("${SDL2_PREFIX}/include")
 endif()
-message("OPENGL library found in ${OPENGL}")
-message("GLEW library found in ${GLEW}")
 message("Zlib library found in ${ZLIB}")
-
-message("OpenGL library linking: ${OPENGL_gl_LIBRARY}")
-message("OpenGL library include: ${OPENGL_INCLUDE_DIR}")
 
 
 get_filename_component(COM_PATH1 "./GameOS/include" ABSOLUTE)
@@ -200,9 +207,12 @@ endif()
 
 
 add_executable(mc2 ${SOURCES} ${MAIN_SRC})
-target_link_libraries(mc2 mclib gosfx mlr stuff gui gameos gameos_main windows ZLIB::ZLIB ${SDL2_LIBRARIES} GLEW::GLEW SDL2_mixer::SDL2_mixer ${ADDITIONAL_LIBS} OpenGL::GL)
+target_link_libraries(mc2 mclib gosfx mlr stuff gui gameos gameos_main windows ZLIB::ZLIB ${SDL2_LIBRARIES} ${MC2_RENDER_LIBS} SDL2_mixer::SDL2_mixer ${ADDITIONAL_LIBS})
 
 add_subdirectory("./res" "./out/res")
 add_subdirectory("./data_tools" "./out/data_tools")
-add_subdirectory("./text_tool" "./out/text_tool")
+if(MC2_RENDERER STREQUAL "GL")
+    # text_tool calls GL directly (via rendergl utils); GL-build only
+    add_subdirectory("./text_tool" "./out/text_tool")
+endif()
 add_subdirectory("./Viewer" "./out/Viewer")

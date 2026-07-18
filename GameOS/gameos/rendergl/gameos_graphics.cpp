@@ -14,8 +14,8 @@
 #include "platform_stdlib.h"
 #include "platform_str.h"
 
-#include "utils/shader_builder.h"
-#include "utils/gl_utils.h"
+#include "shader_builder.h"
+#include "gl_utils.h"
 #include "utils/Image.h"
 #include "utils/vec.h"
 #include "utils/string_utils.h"

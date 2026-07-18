@@ -467,7 +467,6 @@ void LoadScreen::update()
 			}
 
 			status = READYTOLOAD;
-			prefs.applyPrefs( true );
 
 			turnOffAsyncMouse = mc2UseAsyncMouse;
 			if ( !mc2UseAsyncMouse )
@@ -480,6 +479,14 @@ void LoadScreen::update()
 			loadProgress = 0;
 
 			status = NEXT;
+
+			// apply the mission resolution only now, after the exit anim has
+			// finished: the load screen draws in 800x600 menu coordinates, and
+			// switching modes while it was still animating left it playing
+			// undersized in a corner of the already-switched screen (the
+			// mission GUI re-anchors itself on any resolution change, so the
+			// switch is safe to defer to here)
+			prefs.applyPrefs( true );
 
 			//YIKES!!  We could be checking the if before the null and executing after!!  Block the thread!
 			//Wait for thread to finish.

@@ -6,6 +6,151 @@ Newest entries at the top. Practice borrowed from the
 
 ---
 
+## 2026-07-17 — M2: textures swap content under churn on Vulkan — descriptor-cache key collision (FIXED)
+
+User report from the first vk playthrough: the mouse cursor flashed
+between its icon, a semi-translucent blob, and invisible. Reproduced
+without a user: a CGEvent tool sweeps the mouse during
+`MC2_VK_DEBUG=1 mc2-vk -mission mc2_01` (iTerm needs Accessibility
+approval — and per this session's lesson, after approving a blocked
+permission, re-run the blocked test). Once texture churn starts, GUI
+textures show *each other's* content: dock buttons render as concrete
+slabs, pilot portraits render as mech icons, the minimap gets a circuit
+board pasted over it, the cursor sometimes draws as a grey square. The
+identical sweep on the GL build stays pixel-perfect.
+
+Established with last-draw-of-frame logging (MC2_VK_DEBUG): the cursor
+draw itself is healthy — alive handle, right texture *name* (walk.tga,
+the animated walk cursor sheet), right animation UVs, white argb — and
+walk.tga even renders correctly in frames where other GUI elements are
+wrong. No bad-handle / ring-overflow / descriptor-exhaustion / TGA-decode
+diagnostics fire. The TGAs are fine. So handles map to the right stub
+textures; what's crossed is which *GPU texture* ends up bound.
+
+Prime suspect: descriptorFor()'s per-frame cache key — sampler, three
+view pointers, and two UBO pointers folded together with `*31`. That's
+linear over the components: injective in any single component, but
+cross-component collisions exist (a view-pointer delta exactly 31x a
+sampler delta, etc.), and MoltenVK allocates objects at regular address
+strides, so such ratios can recur systematically. A collision is
+deterministic within a frame — the first draw to populate the entry
+wins, every later collider silently renders with its texture — which
+matches the *stable* wrongness (slabs stay slabs) better than any race.
+
+Confirmed by experiment: `MC2_VK_NO_DSET_CACHE=1` (fresh descriptor set
+per draw) made every symptom vanish under the same sweep. Fix: the
+cache map is now keyed on the exact binding tuple (sampler, 3 views,
+2 UBOs — a memcmp-ordered struct) instead of the folded hash. Sweep
+with the cache enabled verified clean: correct portraits, dock,
+minimap, cursor. The env toggle stays as a diagnostic.
+
+Lesson: never key a cache on a lossy hash of handles when the full
+tuple is only 48 bytes — a collision doesn't crash, it silently binds
+the wrong resource, and it's *deterministic*, so it masquerades as
+asset corruption rather than looking like the cache bug it is.
+
+## 2026-07-17 — M2: fullscreen boots stale at 800x600 on Vulkan (exclusive fullscreen + macOS spaces)
+
+First user playthrough on the vk build hit three symptoms at once: the FMV
+intro and main menu drew as an 800x600 patch inside an otherwise-black
+fullscreen (self-healed after an alt-tab), the OS cursor stayed visible
+alongside the game's drawn cursor, and going fullscreen blanked the user's
+second monitor and rearranged every window on the desktop (macOS did not
+restore the layout afterward).
+
+One root cause. The vk backend's `set_window_fullscreen` used **exclusive
+`SDL_WINDOW_FULLSCREEN`** where the GL path deliberately uses
+`SDL_WINDOW_FULLSCREEN_DESKTOP` (its source even carries the commented-out
+rejected alternative). On macOS, exclusive fullscreen on an 800x600 window
+enters a fullscreen space but SDL never delivers the resize that grows the
+surface: the CAMetalLayer — and thus the swapchain — stays 800x600, and
+because no `SIZE_CHANGED` event fires, `set_mouse_capture` never re-runs, so
+`SDL_ShowCursor(SDL_DISABLE)` is never re-asserted either. Alt-tab forces
+the space transition to settle, which finally emits the resize → drawable
+refresh + swapchain recreate → everything snaps correct. The monitor
+blanking is the same flag one layer up: exclusive fullscreen performs a
+real display mode switch (800x600), which macOS treats as a display
+reconfiguration — secondary displays blank during capture and every
+desktop window is re-laid-out against the new geometry, and macOS is bad
+at putting them back. Desktop fullscreen resizes the window immediately
+(the whole event chain fires on its own), never touches the display mode,
+and behaves like the green zoom button — other monitors unaffected.
+
+Fixed by matching the GL path's proven window contract in
+`rendervk/gos_render.cpp`: `SDL_WINDOW_FULLSCREEN_DESKTOP`, re-center on
+return to windowed, `is_window_fullscreen` tests both fullscreen flags, and
+`SDL_WINDOW_ALLOW_HIGHDPI` at window creation — the vk surface had been
+running at Retina *points* (half resolution, silently upscaled); with the
+flag the swapchain runs at native pixels like GL. Mouse math is unaffected:
+`handleMouseMotion` already scales points→drawable by ratio, which was 1.0
+before and 2.0 now, same as GL.
+
+Lesson: the GL backend's window/SDL glue encodes years of platform fixes —
+when writing a second backend, diff the *flags and call order* against it,
+not just the rendering. (Same lesson as the texture-contract bugs below,
+one layer down.)
+
+## 2026-07-17 — M2: missions render on Vulkan (retained path complete)
+
+The mech-mesh path (lighted materials + lights/scene UBOs), FMV YCbCr, and
+real GPU buffers landed; `-mission mc2_01` on MoltenVK now visually matches
+the GL reference. Two bugs found by GL-vs-VK screenshot diffing, both
+2001-era contracts the backend must honor, not Vulkan problems:
+
+**Terrain and mechs rendered with red/blue swapped** (brown ground came out
+steel blue) → the game writes D3D-convention BGRA DWORDs into locked
+textures; the GL path converts to BGRA on Lock and back to RGBA on Unlock,
+and the Vulkan backend skipped that dance. Mirrored the in-place round trip.
+
+**Control-panel chrome vanished / wrong textures on GUI quads** → the vk
+backend reused destroyed texture-handle slots, but txmmgr's cache keeps
+stale handles across cache-out and expects them to stay distinct — GL's
+handle table is append-only. Never reuse handles. (Symptom was surreal:
+concrete building slabs where the button dock should be.)
+
+Lesson: when a legacy game misbehaves on a new backend, diff against the
+old backend's *implementation*, not just its output — both fixes were
+faithfully reproducing GL-side quirks, not writing better Vulkan.
+
+## 2026-07-17 — M2: menus render on Vulkan (immediate-mode path complete)
+
+Same-day follow-up to the backend split: the gos immediate-mode path
+(quads/tris/lines/points + drawText) now renders for real on MoltenVK — the
+full main menu is pixel-faithful to GL on the first successful boot. The
+things that made it work on the first try, recorded for the mission-parity
+work: (1) copy the GL quirks verbatim, don't "fix" them — the tex shader's
+`Color.bgra` swizzle and gos_vertex's divide-by-rhw are load-bearing;
+(2) GL uploads matrices with transpose=GL_TRUE from row-major storage, so
+push constants need the same transpose or everything vanishes off-screen;
+(3) a negative-height viewport (core in Vulkan 1.1) keeps GL's clip-space
+orientation, so the GL projection matrix and winding rules port unchanged;
+(4) glslc `#include` works with plain relative paths, letting the five
+shaders share one push-constant block. Retained-buffer draws (mech meshes,
+FMV YCbCr) are still no-ops — that's the next slice, then terrain.
+
+## 2026-07-17 — M2 begins: backend split, first MoltenVK frame
+
+Not a bug hunt — a milestone marker with the traps we dodged recorded.
+The renderer audit (docs/RENDERER_AUDIT.md) found the gos_* API is a clean
+waist: all GL was already confined to 5 files, except two leaks (raw GL in
+gameosmain.cpp's frame loop; a `gl_utils.h` include in txmmgr.cpp that only
+wanted the packed-color helpers — moved to utils/vec). After plugging those,
+the split was file moves: GL implementation → `rendergl/`, new `rendervk/`
+selected by `cmake -DMC2_RENDERER=VULKAN` (GL stays default).
+
+First Vulkan frame (teal clear, presented inside the real game loop, clean
+autoquit) worked on the first run. MoltenVK specifics that mattered:
+`VK_KHR_portability_enumeration` + the portability instance flag (the brew
+vulkan-loader hides non-conformant devices otherwise), enabling
+`VK_KHR_portability_subset` on the device because MoltenVK advertises it,
+and `SDL_Vulkan_LoadLibrary` needing a fallback path to
+`/opt/homebrew/lib/libvulkan.dylib` on dev machines (the shipped .app will
+bundle MoltenVK instead). Deps: `brew install molten-vk vulkan-headers
+vulkan-loader`. The null gos_* backend backs texture Lock/Unlock with
+correctly sized buffers (decoded via the shared Image code) and loads real
+glyph metrics — the game's logistics/GUI code runs happily against it,
+which is the parity-porting workbench for everything that comes next.
+
 ## 2026-07-17 — Windowed mode & resolution switching work; the cursor-cage hunt
 
 Session goal: graphics testing (windowed mode, resolution changes). Windowed
