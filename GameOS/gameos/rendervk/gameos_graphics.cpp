@@ -45,6 +45,8 @@ static float g_viewport[4] = {0, 0, 1, 1}; // top, left, bottom, right
 static vec4 g_render_viewport(0, 0, 0, 0);
 static mat4 g_projection = mat4::identity();
 
+static char g_last_draw_desc[256]; // MC2_VK_DEBUG: last quad draw of the frame
+
 ////////////////////////////////////////////////////////////////////////////////
 // textures
 
@@ -813,8 +815,9 @@ VkDescriptorSet descriptorFor(VkImageView views[3], VkSampler sampler)
     key = key * 31 + (uint64_t)(uintptr_t)ubo0;
     key = key * 31 + (uint64_t)(uintptr_t)ubo1;
 
+    static const bool no_cache = getenv("MC2_VK_NO_DSET_CACHE") != NULL;
     std::map<uint64_t, VkDescriptorSet>::iterator it = g_eng.dset_cache.find(key);
-    if(it != g_eng.dset_cache.end())
+    if(!no_cache && it != g_eng.dset_cache.end())
         return it->second;
 
     graphics::VkFrame* fr = graphics::vk_frame();
@@ -958,10 +961,34 @@ void emitDraw(ShaderKind sh, TopoKind topo, const gos_VERTEX* vertices, int coun
         return;
     vkCmdBindVertexBuffers(cb, 0, 1, &g_eng.ring, &voff);
     vkCmdDraw(cb, (uint32_t)count, 1, 0, 0);
+
+    // MC2_VK_DEBUG: the mouse cursor is the last quad drawn each frame —
+    // remember what this draw used so engineBeginFrame can report it
+    if(getenv("MC2_VK_DEBUG") && topo == TOPO_TRIS) {
+        DWORD th = (DWORD)g_render_states[gos_State_Texture];
+        VkStubTexture* t = getTexture(th);
+        snprintf(g_last_draw_desc, sizeof(g_last_draw_desc),
+                "sh=%d count=%d tex=%u '%s' %ux%u alpha=%d atest=%d uv0=%.3f,%.3f argb=%08x",
+                (int)sh, count, th, t ? t->name_.c_str() : "-",
+                t ? t->w_ : 0, t ? t->h_ : 0,
+                g_render_states[gos_State_AlphaMode], g_render_states[gos_State_AlphaTest],
+                vertices[0].u, vertices[0].v, vertices[0].argb);
+    }
 }
 
 void engineBeginFrame()
 {
+    if(getenv("MC2_VK_DEBUG")) {
+        static uint32_t frames = 0;
+        static time_t last = 0;
+        frames++;
+        time_t now = time(NULL);
+        if(now != last && g_last_draw_desc[0]) {
+            printf("[VKDBG] last draw of frame %u: %s\n", frames, g_last_draw_desc);
+            fflush(stdout);
+            last = now;
+        }
+    }
     // previous frame's fence has been waited — deferred GPU objects are safe
     if(g_eng.initialized || !g_deferred_images.empty() || !g_deferred_buffers.empty()) {
         graphics::VkFrame* fr = graphics::vk_frame();

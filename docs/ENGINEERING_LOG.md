@@ -6,6 +6,44 @@ Newest entries at the top. Practice borrowed from the
 
 ---
 
+## 2026-07-17 — M2 (IN PROGRESS): textures swap content under churn on Vulkan — cursor "flashing", slab dock, wrong portraits
+
+User report from the first vk playthrough: the mouse cursor flashed
+between its icon, a semi-translucent blob, and invisible. Reproduced
+without a user: a CGEvent tool sweeps the mouse during
+`MC2_VK_DEBUG=1 mc2-vk -mission mc2_01` (iTerm needs Accessibility
+approval — and per this session's lesson, after approving a blocked
+permission, re-run the blocked test). Once texture churn starts, GUI
+textures show *each other's* content: dock buttons render as concrete
+slabs, pilot portraits render as mech icons, the minimap gets a circuit
+board pasted over it, the cursor sometimes draws as a grey square. The
+identical sweep on the GL build stays pixel-perfect.
+
+Established with last-draw-of-frame logging (MC2_VK_DEBUG): the cursor
+draw itself is healthy — alive handle, right texture *name* (walk.tga,
+the animated walk cursor sheet), right animation UVs, white argb — and
+walk.tga even renders correctly in frames where other GUI elements are
+wrong. No bad-handle / ring-overflow / descriptor-exhaustion / TGA-decode
+diagnostics fire. The TGAs are fine. So handles map to the right stub
+textures; what's crossed is which *GPU texture* ends up bound.
+
+Prime suspect: descriptorFor()'s per-frame cache key — sampler, three
+view pointers, and two UBO pointers folded together with `*31`. That's
+linear over the components: injective in any single component, but
+cross-component collisions exist (a view-pointer delta exactly 31x a
+sampler delta, etc.), and MoltenVK allocates objects at regular address
+strides, so such ratios can recur systematically. A collision is
+deterministic within a frame — the first draw to populate the entry
+wins, every later collider silently renders with its texture — which
+matches the *stable* wrongness (slabs stay slabs) better than any race.
+
+Next experiment (edit staged): `MC2_VK_NO_DSET_CACHE=1` bypasses the
+cache lookup so every draw gets a freshly written descriptor set.
+Corruption gone ⇒ collision confirmed; the fix is to key the (already
+ordered) std::map on the actual tuple of handles instead of a folded
+hash. Corruption still there ⇒ next suspects are the ring-staged
+uploads in textureToGpu or a stale view written into a cached set.
+
 ## 2026-07-17 — M2: fullscreen boots stale at 800x600 on Vulkan (exclusive fullscreen + macOS spaces)
 
 First user playthrough on the vk build hit three symptoms at once: the FMV
