@@ -6,6 +6,28 @@ Newest entries at the top. Practice borrowed from the
 
 ---
 
+## 2026-07-17 — M2: missions render on Vulkan (retained path complete)
+
+The mech-mesh path (lighted materials + lights/scene UBOs), FMV YCbCr, and
+real GPU buffers landed; `-mission mc2_01` on MoltenVK now visually matches
+the GL reference. Two bugs found by GL-vs-VK screenshot diffing, both
+2001-era contracts the backend must honor, not Vulkan problems:
+
+**Terrain and mechs rendered with red/blue swapped** (brown ground came out
+steel blue) → the game writes D3D-convention BGRA DWORDs into locked
+textures; the GL path converts to BGRA on Lock and back to RGBA on Unlock,
+and the Vulkan backend skipped that dance. Mirrored the in-place round trip.
+
+**Control-panel chrome vanished / wrong textures on GUI quads** → the vk
+backend reused destroyed texture-handle slots, but txmmgr's cache keeps
+stale handles across cache-out and expects them to stay distinct — GL's
+handle table is append-only. Never reuse handles. (Symptom was surreal:
+concrete building slabs where the button dock should be.)
+
+Lesson: when a legacy game misbehaves on a new backend, diff against the
+old backend's *implementation*, not just its output — both fixes were
+faithfully reproducing GL-side quirks, not writing better Vulkan.
+
 ## 2026-07-17 — M2: menus render on Vulkan (immediate-mode path complete)
 
 Same-day follow-up to the backend split: the gos immediate-mode path
