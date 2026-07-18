@@ -5,13 +5,11 @@
 Prerequisites (Homebrew):
 
 ```sh
-brew install cmake git-lfs sdl2 sdl2_mixer sdl2_ttf glew
+brew install cmake sdl2 sdl2_mixer sdl2_ttf glew
 ```
 
 Notes:
 - `sdl2` installs `sdl2-compat` (the SDL2 API over SDL3) on current Homebrew — that's fine.
-- `git-lfs` is needed to check out `3rdparty.zip` (prebuilt *Windows* libs; the
-  mac build doesn't use it, but a clone without LFS aborts mid-checkout).
 - zlib and OpenGL come from the macOS SDK. OpenGL is deprecated-but-present;
   the Vulkan/MoltenVK renderer is milestone M2 (see docs/ROADMAP.md).
 
