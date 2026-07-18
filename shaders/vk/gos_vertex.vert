@@ -15,7 +15,7 @@ layout(location = 2) out vec2 Texcoord;
 
 void main(void)
 {
-    vec4 p = pc.mvp * vec4(pos.xyz, 1);
+    vec4 p = pc.m0 * vec4(pos.xyz, 1);
     gl_Position = p / pos.w;
     Color = color;
     FogValue = fog.w;

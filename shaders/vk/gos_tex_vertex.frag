@@ -22,7 +22,7 @@ void main(void)
     if((pc.flags & 1u) != 0u && tex_color.a == 0.0)
         discard;
 
-    if(pc.fog_color.x > 0.0 || pc.fog_color.y > 0.0 || pc.fog_color.z > 0.0 || pc.fog_color.w > 0.0)
-        c.rgb = mix(pc.fog_color.rgb, c.rgb, FogValue);
+    if(pc.v0.x > 0.0 || pc.v0.y > 0.0 || pc.v0.z > 0.0 || pc.v0.w > 0.0)
+        c.rgb = mix(pc.v0.rgb, c.rgb, FogValue);
     FragColor = c;
 }

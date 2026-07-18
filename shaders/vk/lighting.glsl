@@ -1,0 +1,131 @@
+// Vulkan port of shaders/include/lighting.hglsl — LightsData UBO at set 0
+// binding 3 (C++ side: LIGHT_DATA_ATTACHMENT_SLOT=0 -> descriptor binding 3)
+#ifndef LIGHTING_GLSL_INCLUDED
+#define LIGHTING_GLSL_INCLUDED
+
+#include "scene.glsl"
+
+#define ENABLE_VERTEX_LIGHTING              0
+
+#define     TG_LIGHT_AMBIENT                0
+#define     TG_LIGHT_INFINITE               1
+#define     TG_LIGHT_INFINITEWITHFALLOFF    2
+#define     TG_LIGHT_POINT                  3
+#define     TG_LIGHT_SPOT                   4
+#define     TG_LIGHT_TERRAIN                5
+#define MAX_LIGHTS_IN_WORLD 16
+
+#define Stuff_SMALL                         1e-4
+
+struct ObjectLights {
+    mat4 light_to_world[MAX_LIGHTS_IN_WORLD];
+    vec4 light_dir[MAX_LIGHTS_IN_WORLD]; // w - light type
+    vec4 light_color[MAX_LIGHTS_IN_WORLD];
+    ivec4 numLights;
+};
+
+layout (std140, set = 0, binding = 3) uniform LightsData
+{
+    ObjectLights light[32];
+};
+
+//================================================================================
+vec3 get_base_light(
+        in vec4 startVLight,
+        in bool isNight, in float nightFactor, in bool isHudElement, in bool lightsOut,
+        in vec3 hotPinkRGB, in vec3 hotYellowRGB, in vec3 hotGreenRGB)
+{
+    vec3 final = vec3(0.0);
+    uint r = uint(clamp(startVLight.x*255.0 + 0.5, 0.0, 255.0));
+    uint g = uint(clamp(startVLight.y*255.0 + 0.5, 0.0, 255.0));
+    uint b = uint(clamp(startVLight.z*255.0 + 0.5, 0.0, 255.0));
+    uint a = uint(clamp(startVLight.w*255.0 + 0.5, 0.0, 255.0));
+
+    // bgra because we compare with hexadecimals which are in this format (see tgl.cpp)
+    uint start_v_light = b | (g<<8) | (r<<16) | (a<<24);
+
+    if (start_v_light == 0xffff00ffu)           //Hot Pink -- Lit Windows -- ONLY at NIGHT
+    {
+        if (isNight)
+        {
+            final = hotPinkRGB;
+        }
+        else if (nightFactor > Stuff_SMALL)
+        {
+            final = hotPinkRGB * nightFactor;
+        }
+        else        //Its not night, paint windows dark grey
+        {
+            final = vec3(float(0x2f)/255.0);
+        }
+    }
+    else if (start_v_light == 0xffffff00u)      //Hot Yellow -- Outside Building Lights -- ONLY at NIGHT
+    {
+        if (nightFactor >= 0.75)
+        {
+            if (isNight)
+            {
+                final = hotYellowRGB;
+            }
+            else
+            {
+                final = hotYellowRGB * nightFactor;
+            }
+        }
+    }
+    else if (start_v_light == 0xff00ff00u)      //Hot Green -- Building Base Lights -- ONLY at NIGHT
+    {
+        if (isNight)
+        {
+            final = hotGreenRGB;
+        }
+        else if (nightFactor > Stuff_SMALL)
+        {
+            final = hotGreenRGB * nightFactor;
+        }
+    }
+    else if (start_v_light == 0xffff0000u)      //Hot Red -- Blink this light.
+    {
+
+    }
+    else if (start_v_light == 0xff0000ffu)      //Hot Blue -- Blink this light.
+    {
+
+    }
+    else if ((start_v_light & 0x00ffffffu) != 0u)   //Some other kind of light, just add it in.
+    {
+        if (!lightsOut)
+        {
+            final = startVLight.xyz;
+        }
+    }
+    else if (isHudElement)
+    {
+        final = vec3(1.0);  //Just max out its light.
+    }
+
+    final.xyz += g_scene.baseVertexColor.xyz; // used for brightness
+
+    return clamp(final.xyz, vec3(0.0), vec3(1.0));
+}
+
+//================================================================================
+vec3 calc_light(in int lights_index, in vec3 normal, in vec3 base_light)
+{
+    // hardcode for now:
+    //  0 light - directional
+    //  1st light ambient
+
+    ObjectLights ld = light[lights_index];
+
+    if(0 == ld.numLights.x)
+        return vec3(1,1,1);
+
+    float n_dot_l = clamp(dot((normal), -ld.light_dir[0].xyz), 0.0, 1.0);
+    vec3 diffuse = n_dot_l * ld.light_color[0].xyz;
+    vec3 ambient = ld.light_color[1].xyz;
+    // in software version there is clamp, but deliberately removed upstream
+    return vec3(base_light + diffuse + ambient);
+}
+
+#endif // LIGHTING_GLSL_INCLUDED

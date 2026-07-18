@@ -1,8 +1,9 @@
 // Vulkan-backend implementation of the gos_* graphics API (M2).
-// Immediate-mode path (quads/tris/lines/points + text) renders for real:
-// SPIR-V pipelines keyed on render state, a per-frame vertex ring buffer,
-// textures decoded via the shared Image code and uploaded on first use.
-// Retained-buffer draws (mech meshes, FMV) are still no-ops — next stage.
+// Renders the immediate-mode path (quads/tris/lines/points + text) and the
+// retained path (mech meshes via the lighted materials + UBOs, FMV YCbCr).
+// SPIR-V pipelines are keyed on render state + vertex layout; a per-frame
+// host-visible ring holds immediate vertices and texture staging; retained
+// vertex/index/uniform buffers are host-visible VkBuffers owned by gosBuffer.
 // Frame lifecycle (swapchain/render pass) lives in rendervk/gos_render.cpp.
 
 #include "gameos.hpp"
@@ -52,26 +53,43 @@ struct VkStubTexture {
     gos_TextureFormat format_;
     uint32_t w_;
     uint32_t h_;
-    std::vector<DWORD> pixels_; // 8888, memory order R,G,B,A (as GL path)
+    std::vector<DWORD> pixels_; // 8888 (or w*h bytes for Luminance)
     bool alive_;
     bool dirty_;                // CPU pixels newer than GPU image
+    bool lock_read_only_;
 
     VkImage image_;
     VkDeviceMemory memory_;
     VkImageView view_;
+
+    bool isLuminance() const { return format_ == gos_Texture_Luminance; }
 };
 
 static std::vector<VkStubTexture> g_textures;
 
+// GPU objects that may still be referenced by the in-flight frame are
+// destroyed at the next vk_begin_frame (after the frame fence has been waited)
+struct DeferredImage { VkImage image; VkDeviceMemory memory; VkImageView view; };
+struct DeferredBuffer { VkBuffer buffer; VkDeviceMemory memory; };
+static std::vector<DeferredImage> g_deferred_images;
+static std::vector<DeferredBuffer> g_deferred_buffers;
+
+static void deferDestroyTextureGpu(VkStubTexture* t)
+{
+    if(t->image_ != VK_NULL_HANDLE) {
+        DeferredImage d = { t->image_, t->memory_, t->view_ };
+        g_deferred_images.push_back(d);
+        t->image_ = VK_NULL_HANDLE;
+        t->memory_ = VK_NULL_HANDLE;
+        t->view_ = VK_NULL_HANDLE;
+    }
+}
+
 static DWORD addTexture(VkStubTexture&& t)
 {
-    // reuse dead slots so long sessions don't grow the table unboundedly
-    for(size_t i = 0; i < g_textures.size(); ++i) {
-        if(!g_textures[i].alive_ && g_textures[i].image_ == VK_NULL_HANDLE) {
-            g_textures[i] = t;
-            return (DWORD)(i + 1);
-        }
-    }
+    // NEVER reuse slots: the game's texture cache (txmmgr) keeps stale
+    // handles around after cache-out, and the GL path's handles are
+    // append-only — reusing a slot aliases two logically distinct textures
     g_textures.push_back(t);
     return (DWORD)g_textures.size(); // handle 0 = "no texture"
 }
@@ -105,31 +123,103 @@ static void fillPixels(VkStubTexture& t, const Image& img)
 }
 
 ////////////////////////////////////////////////////////////////////////////////
+// buffers / vertex declarations (retained path)
+
+class gosBuffer {
+public:
+    gosBUFFER_TYPE type_;
+    gosBUFFER_USAGE usage_;
+    int element_size_;
+    uint32_t count_;
+    std::vector<uint8_t> data_;
+
+    VkBuffer vk_buffer_;
+    VkDeviceMemory vk_memory_;
+    uint8_t* mapped_;
+    VkDeviceSize vk_size_;
+
+    void ensureGpu();
+    void writeGpu(size_t offset, const void* src, size_t bytes);
+};
+
+class gosVertexDeclaration {
+public:
+    std::vector<gosVERTEX_FORMAT_RECORD> records_;
+};
+
+////////////////////////////////////////////////////////////////////////////////
+// render materials
+
+enum MaterialKind {
+    MAT_UNKNOWN = 0,
+    MAT_VERTEX_LIGHTED,      // "gos_vertex_lighted" (plain mvp shader in GL too)
+    MAT_TEX_VERTEX_LIGHTED,  // "gos_tex_vertex_lighted" (mech/object path)
+    MAT_YCBCR,               // "gos_YCbCr" (FMV)
+};
+
+class gosRenderMaterial {
+public:
+    std::string name_;
+    MaterialKind kind_;
+    // named parameters, mirroring the GL loose uniforms we care about
+    mat4 wvp_;
+    mat4 world_;
+    mat4 projection_;
+    vec4 light_offset_;
+    vec4 vp_;
+    vec4 texture_crop_size_;
+    vec4 scale_offset_;
+};
+
+static gosRenderMaterial* g_current_material = NULL;
+static gosBuffer* g_ubo_slots[2] = { NULL, NULL }; // 0=LightsData, 1=SceneData
+
+////////////////////////////////////////////////////////////////////////////////
 // Vulkan draw machinery
 
 namespace {
 
 struct PushConstants {
-    float mvp[16];
-    float fog_color[4];
-    float foreground[4];
+    float m0[16];
+    float m1[16];
+    float m2[16];
+    float v0[4];
+    float v1[4];
     uint32_t flags;
     uint32_t pad_[3];
 };
 
-enum ShaderKind { SHADER_VERTEX = 0, SHADER_TEX_VERTEX = 1, SHADER_TEXT = 2, SHADER_KIND_COUNT };
+enum ShaderKind {
+    SHADER_VERTEX = 0,
+    SHADER_TEX_VERTEX,
+    SHADER_TEXT,
+    SHADER_VERTEX_LIGHTED,
+    SHADER_TEX_VERTEX_LIGHTED,
+    SHADER_YCBCR,
+    SHADER_KIND_COUNT
+};
 enum TopoKind { TOPO_TRIS = 0, TOPO_LINES = 1, TOPO_POINTS = 2, TOPO_COUNT };
+
+struct ShaderPair { VkShaderModule vs, fs; };
+
+struct PipelineKey {
+    uint32_t state_bits;
+    const gosVertexDeclaration* vdecl; // NULL = gos_VERTEX layout
+    bool operator<(const PipelineKey& o) const {
+        if(state_bits != o.state_bits) return state_bits < o.state_bits;
+        return vdecl < o.vdecl;
+    }
+};
 
 struct VkDrawEngine {
     bool initialized;
     bool init_failed;
 
-    VkShaderModule vs_vertex, vs_text;
-    VkShaderModule fs_vertex, fs_tex_vertex, fs_text;
+    ShaderPair shaders[SHADER_KIND_COUNT];
 
     VkDescriptorSetLayout dset_layout;
     VkPipelineLayout pipe_layout;
-    std::map<uint32_t, VkPipeline> pipelines;
+    std::map<PipelineKey, VkPipeline> pipelines;
 
     VkSampler samplers[4]; // [filter linear?][address clamp?]
 
@@ -142,12 +232,24 @@ struct VkDrawEngine {
     bool ring_overflowed;
 
     VkDescriptorPool dpool;
-    std::map<uint64_t, VkDescriptorSet> dset_cache; // per-frame (view,sampler)->set
+    std::map<uint64_t, VkDescriptorSet> dset_cache;
 
     VkPipeline bound_pipeline;
+
+    // fallbacks for descriptor bindings a draw doesn't use
+    VkImage dummy_image;
+    VkDeviceMemory dummy_image_mem;
+    VkImageView dummy_view;
+    bool dummy_uploaded;
+    VkBuffer dummy_ubo;
+    VkDeviceMemory dummy_ubo_mem;
 };
 
 VkDrawEngine g_eng = {};
+
+// dummy UBO must cover the largest std140 block the shaders declare
+// (ObjectLights light[32] — see shaders/vk/lighting.glsl)
+static const VkDeviceSize DUMMY_UBO_SIZE = 64 * 1024;
 
 VkShaderModule loadShaderModule(VkDevice dev, const char* path)
 {
@@ -175,6 +277,38 @@ VkShaderModule loadShaderModule(VkDevice dev, const char* path)
     return mod;
 }
 
+bool loadShaderPair(VkDevice dev, ShaderPair* out, const char* vs_name, const char* fs_name)
+{
+    char path[512];
+    snprintf(path, sizeof(path), "shaders/vk/%s.spv", vs_name);
+    out->vs = loadShaderModule(dev, path);
+    snprintf(path, sizeof(path), "shaders/vk/%s.spv", fs_name);
+    out->fs = loadShaderModule(dev, path);
+    return out->vs && out->fs;
+}
+
+void createHostBuffer(VkDevice dev, VkDeviceSize size, VkBufferUsageFlags usage,
+                      VkBuffer* buf, VkDeviceMemory* mem, uint8_t** mapped)
+{
+    VkBufferCreateInfo bci = {};
+    bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bci.size = size;
+    bci.usage = usage;
+    bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    vkCreateBuffer(dev, &bci, NULL, buf);
+    VkMemoryRequirements mreq;
+    vkGetBufferMemoryRequirements(dev, *buf, &mreq);
+    VkMemoryAllocateInfo mai = {};
+    mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    mai.allocationSize = mreq.size;
+    mai.memoryTypeIndex = graphics::vk_find_memory_type(mreq.memoryTypeBits,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    vkAllocateMemory(dev, &mai, NULL, mem);
+    vkBindBufferMemory(dev, *buf, *mem, 0);
+    if(mapped)
+        vkMapMemory(dev, *mem, 0, VK_WHOLE_SIZE, 0, (void**)mapped);
+}
+
 bool engineInit()
 {
     if(g_eng.initialized)
@@ -187,25 +321,36 @@ bool engineInit()
         return false;
     VkDevice dev = fr->device;
 
-    g_eng.vs_vertex = loadShaderModule(dev, "shaders/vk/gos_vertex.vert.spv");
-    g_eng.fs_vertex = loadShaderModule(dev, "shaders/vk/gos_vertex.frag.spv");
-    g_eng.fs_tex_vertex = loadShaderModule(dev, "shaders/vk/gos_tex_vertex.frag.spv");
-    g_eng.vs_text = loadShaderModule(dev, "shaders/vk/gos_text.vert.spv");
-    g_eng.fs_text = loadShaderModule(dev, "shaders/vk/gos_text.frag.spv");
-    if(!g_eng.vs_vertex || !g_eng.fs_vertex || !g_eng.fs_tex_vertex || !g_eng.vs_text || !g_eng.fs_text) {
+    bool ok = true;
+    ok &= loadShaderPair(dev, &g_eng.shaders[SHADER_VERTEX], "gos_vertex.vert", "gos_vertex.frag");
+    ok &= loadShaderPair(dev, &g_eng.shaders[SHADER_TEX_VERTEX], "gos_vertex.vert", "gos_tex_vertex.frag");
+    ok &= loadShaderPair(dev, &g_eng.shaders[SHADER_TEXT], "gos_text.vert", "gos_text.frag");
+    ok &= loadShaderPair(dev, &g_eng.shaders[SHADER_VERTEX_LIGHTED], "gos_vertex_lighted.vert", "gos_vertex_lighted.frag");
+    ok &= loadShaderPair(dev, &g_eng.shaders[SHADER_TEX_VERTEX_LIGHTED], "gos_tex_vertex_lighted.vert", "gos_tex_vertex_lighted.frag");
+    ok &= loadShaderPair(dev, &g_eng.shaders[SHADER_YCBCR], "gos_YCbCr.vert", "gos_YCbCr.frag");
+    if(!ok) {
         g_eng.init_failed = true; // draws become no-ops; frame still clears
         return false;
     }
 
-    VkDescriptorSetLayoutBinding b = {};
-    b.binding = 0;
-    b.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    b.descriptorCount = 1;
-    b.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    // one layout for everything: 3 samplers + lights UBO + scene UBO
+    VkDescriptorSetLayoutBinding binds[5] = {};
+    for(int i = 0; i < 3; ++i) {
+        binds[i].binding = i;
+        binds[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        binds[i].descriptorCount = 1;
+        binds[i].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    }
+    for(int i = 3; i < 5; ++i) {
+        binds[i].binding = i;
+        binds[i].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        binds[i].descriptorCount = 1;
+        binds[i].stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+    }
     VkDescriptorSetLayoutCreateInfo dlci = {};
     dlci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    dlci.bindingCount = 1;
-    dlci.pBindings = &b;
+    dlci.bindingCount = 5;
+    dlci.pBindings = binds;
     vkCreateDescriptorSetLayout(dev, &dlci, NULL, &g_eng.dset_layout);
 
     VkPushConstantRange pcr = {};
@@ -234,54 +379,108 @@ bool engineInit()
         }
     }
 
-    // 16 MB host-visible ring: vertex data + texture staging for one frame
+    // 16 MB host-visible ring: immediate vertex data + texture staging
     g_eng.ring_size = 16u * 1024 * 1024;
-    VkBufferCreateInfo bci = {};
-    bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    bci.size = g_eng.ring_size;
-    bci.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT
-              | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-    bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    vkCreateBuffer(dev, &bci, NULL, &g_eng.ring);
-    VkMemoryRequirements mreq;
-    vkGetBufferMemoryRequirements(dev, g_eng.ring, &mreq);
-    VkMemoryAllocateInfo mai = {};
-    mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    mai.allocationSize = mreq.size;
-    mai.memoryTypeIndex = graphics::vk_find_memory_type(mreq.memoryTypeBits,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    vkAllocateMemory(dev, &mai, NULL, &g_eng.ring_mem);
-    vkBindBufferMemory(dev, g_eng.ring, g_eng.ring_mem, 0);
-    vkMapMemory(dev, g_eng.ring_mem, 0, VK_WHOLE_SIZE, 0, (void**)&g_eng.ring_ptr);
+    createHostBuffer(dev, g_eng.ring_size,
+            VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT
+          | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+            &g_eng.ring, &g_eng.ring_mem, &g_eng.ring_ptr);
 
-    VkDescriptorPoolSize dps = { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 4096 };
+    VkDescriptorPoolSize dps[2] = {
+        { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3 * 4096 },
+        { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 2 * 4096 },
+    };
     VkDescriptorPoolCreateInfo dpci = {};
     dpci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     dpci.maxSets = 4096;
-    dpci.poolSizeCount = 1;
-    dpci.pPoolSizes = &dps;
+    dpci.poolSizeCount = 2;
+    dpci.pPoolSizes = dps;
     vkCreateDescriptorPool(dev, &dpci, NULL, &g_eng.dpool);
+
+    // dummy resources for unused bindings
+    {
+        VkImageCreateInfo ici = {};
+        ici.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        ici.imageType = VK_IMAGE_TYPE_2D;
+        ici.format = VK_FORMAT_R8G8B8A8_UNORM;
+        ici.extent.width = 1;
+        ici.extent.height = 1;
+        ici.extent.depth = 1;
+        ici.mipLevels = 1;
+        ici.arrayLayers = 1;
+        ici.samples = VK_SAMPLE_COUNT_1_BIT;
+        ici.tiling = VK_IMAGE_TILING_OPTIMAL;
+        ici.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+        ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        vkCreateImage(dev, &ici, NULL, &g_eng.dummy_image);
+        VkMemoryRequirements mreq;
+        vkGetImageMemoryRequirements(dev, g_eng.dummy_image, &mreq);
+        VkMemoryAllocateInfo mai = {};
+        mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        mai.allocationSize = mreq.size;
+        mai.memoryTypeIndex = graphics::vk_find_memory_type(mreq.memoryTypeBits,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        vkAllocateMemory(dev, &mai, NULL, &g_eng.dummy_image_mem);
+        vkBindImageMemory(dev, g_eng.dummy_image, g_eng.dummy_image_mem, 0);
+        VkImageViewCreateInfo vci = {};
+        vci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        vci.image = g_eng.dummy_image;
+        vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        vci.format = VK_FORMAT_R8G8B8A8_UNORM;
+        vci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        vci.subresourceRange.levelCount = 1;
+        vci.subresourceRange.layerCount = 1;
+        vkCreateImageView(dev, &vci, NULL, &g_eng.dummy_view);
+        g_eng.dummy_uploaded = false;
+    }
+    createHostBuffer(dev, DUMMY_UBO_SIZE, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+            &g_eng.dummy_ubo, &g_eng.dummy_ubo_mem, NULL);
 
     g_eng.initialized = true;
     return true;
 }
 
-uint32_t pipelineKey(ShaderKind sh, TopoKind topo)
+// state bits shared by every pipeline: blend, depth, cull (+ shader/topology)
+uint32_t stateBits(ShaderKind sh, TopoKind topo)
 {
     uint32_t blend = g_render_states[gos_State_AlphaMode];      // 0..4
     uint32_t zcomp = g_render_states[gos_State_ZCompare];       // 0..2
     uint32_t zwrite = g_render_states[gos_State_ZWrite] ? 1 : 0;
-    uint32_t cull = g_render_states[gos_State_Culling];         // 0..2 (gos_Cull_None=0? see below)
-    // gos_Cull_None=1,CW=2,CCW=3 in gameos.hpp -> normalize to 0..2
-    if(cull >= 1) cull -= 1;
-    return (uint32_t)sh | ((uint32_t)topo << 3) | (blend << 6) | (zcomp << 10)
-         | (zwrite << 13) | (cull << 14);
+    uint32_t cull = g_render_states[gos_State_Culling];
+    if(cull >= 1) cull -= 1;                                    // gos_Cull_None=1
+    return (uint32_t)sh | ((uint32_t)topo << 4) | (blend << 7) | (zcomp << 11)
+         | (zwrite << 14) | (cull << 15);
 }
 
-VkPipeline getPipeline(ShaderKind sh, TopoKind topo)
+VkFormat attribFormat(const gosVERTEX_FORMAT_RECORD& r)
 {
-    uint32_t key = pipelineKey(sh, topo);
-    std::map<uint32_t, VkPipeline>::iterator it = g_eng.pipelines.find(key);
+    if(r.type == gosVERTEX_ATTRIB_TYPE::FLOAT) {
+        switch(r.num_components) {
+            case 1: return VK_FORMAT_R32_SFLOAT;
+            case 2: return VK_FORMAT_R32G32_SFLOAT;
+            case 3: return VK_FORMAT_R32G32B32_SFLOAT;
+            case 4: return VK_FORMAT_R32G32B32A32_SFLOAT;
+        }
+    }
+    if(r.type == gosVERTEX_ATTRIB_TYPE::UNSIGNED_BYTE) {
+        if(r.num_components == 4)
+            return r.normalized ? VK_FORMAT_R8G8B8A8_UNORM : VK_FORMAT_R8G8B8A8_UINT;
+    }
+    if(r.type == gosVERTEX_ATTRIB_TYPE::UNSIGNED_SHORT) {
+        if(r.num_components == 2)
+            return r.normalized ? VK_FORMAT_R16G16_UNORM : VK_FORMAT_R16G16_UINT;
+        if(r.num_components == 4)
+            return r.normalized ? VK_FORMAT_R16G16B16A16_UNORM : VK_FORMAT_R16G16B16A16_UINT;
+    }
+    SPEW(("GRAPHICS", "VK: unsupported vertex attrib (type %d x%d)\n",
+          (int)r.type, r.num_components));
+    return VK_FORMAT_R32_SFLOAT;
+}
+
+VkPipeline getPipeline(ShaderKind sh, TopoKind topo, const gosVertexDeclaration* vdecl)
+{
+    PipelineKey key = { stateBits(sh, topo), vdecl };
+    std::map<PipelineKey, VkPipeline>::iterator it = g_eng.pipelines.find(key);
     if(it != g_eng.pipelines.end())
         return it->second;
 
@@ -290,28 +489,42 @@ VkPipeline getPipeline(ShaderKind sh, TopoKind topo)
     VkPipelineShaderStageCreateInfo stages[2] = {};
     stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
-    stages[0].module = (sh == SHADER_TEXT) ? g_eng.vs_text : g_eng.vs_vertex;
+    stages[0].module = g_eng.shaders[sh].vs;
     stages[0].pName = "main";
     stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-    stages[1].module = (sh == SHADER_TEXT) ? g_eng.fs_text
-                     : (sh == SHADER_TEX_VERTEX) ? g_eng.fs_tex_vertex : g_eng.fs_vertex;
+    stages[1].module = g_eng.shaders[sh].fs;
     stages[1].pName = "main";
 
-    // gos_VERTEX: 4 floats pos, u8x4 argb, u8x4 frgb, 2 floats uv (32 bytes)
+    // vertex input: gos_VERTEX for the immediate path, else from the vdecl
     VkVertexInputBindingDescription bind = { 0, sizeof(gos_VERTEX), VK_VERTEX_INPUT_RATE_VERTEX };
-    VkVertexInputAttributeDescription attrs[4] = {
-        { 0, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 0 },
-        { 1, 0, VK_FORMAT_R8G8B8A8_UNORM, 16 },
-        { 2, 0, VK_FORMAT_R8G8B8A8_UNORM, 20 },
-        { 3, 0, VK_FORMAT_R32G32_SFLOAT, 24 },
-    };
+    std::vector<VkVertexInputAttributeDescription> attrs;
+    if(!vdecl) {
+        VkVertexInputAttributeDescription a[4] = {
+            { 0, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 0 },
+            { 1, 0, VK_FORMAT_R8G8B8A8_UNORM, 16 },
+            { 2, 0, VK_FORMAT_R8G8B8A8_UNORM, 20 },
+            { 3, 0, VK_FORMAT_R32G32_SFLOAT, 24 },
+        };
+        attrs.assign(a, a + 4);
+    } else {
+        bind.stride = vdecl->records_.empty() ? 0 : (uint32_t)vdecl->records_[0].stride;
+        for(size_t i = 0; i < vdecl->records_.size(); ++i) {
+            const gosVERTEX_FORMAT_RECORD& r = vdecl->records_[i];
+            VkVertexInputAttributeDescription a = {};
+            a.location = (uint32_t)r.index;
+            a.binding = 0;
+            a.format = attribFormat(r);
+            a.offset = (uint32_t)r.offset;
+            attrs.push_back(a);
+        }
+    }
     VkPipelineVertexInputStateCreateInfo vi = {};
     vi.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
     vi.vertexBindingDescriptionCount = 1;
     vi.pVertexBindingDescriptions = &bind;
-    vi.vertexAttributeDescriptionCount = 4;
-    vi.pVertexAttributeDescriptions = attrs;
+    vi.vertexAttributeDescriptionCount = (uint32_t)attrs.size();
+    vi.pVertexAttributeDescriptions = attrs.data();
 
     VkPipelineInputAssemblyStateCreateInfo ia = {};
     ia.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
@@ -354,6 +567,8 @@ VkPipeline getPipeline(ShaderKind sh, TopoKind topo)
         default:
         case gos_Alpha_OneZero:
             cba.blendEnable = VK_FALSE;
+            cba.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+            cba.dstColorBlendFactor = VK_BLEND_FACTOR_ZERO;
             break;
         case gos_Alpha_OneOne:
             cba.blendEnable = VK_TRUE;
@@ -376,8 +591,8 @@ VkPipeline getPipeline(ShaderKind sh, TopoKind topo)
             cba.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
             break;
     }
-    cba.srcAlphaBlendFactor = cba.srcColorBlendFactor ? cba.srcColorBlendFactor : VK_BLEND_FACTOR_ONE;
-    cba.dstAlphaBlendFactor = cba.dstColorBlendFactor ? cba.dstColorBlendFactor : VK_BLEND_FACTOR_ZERO;
+    cba.srcAlphaBlendFactor = cba.srcColorBlendFactor;
+    cba.dstAlphaBlendFactor = cba.dstColorBlendFactor;
     cba.colorBlendOp = VK_BLEND_OP_ADD;
     cba.alphaBlendOp = VK_BLEND_OP_ADD;
 
@@ -409,7 +624,7 @@ VkPipeline getPipeline(ShaderKind sh, TopoKind topo)
 
     VkPipeline pipe = VK_NULL_HANDLE;
     if(vkCreateGraphicsPipelines(fr->device, VK_NULL_HANDLE, 1, &gpci, NULL, &pipe) != VK_SUCCESS) {
-        SPEW(("GRAPHICS", "VK: pipeline creation failed (key %x)\n", key));
+        SPEW(("GRAPHICS", "VK: pipeline creation failed (bits %x)\n", key.state_bits));
     }
     g_eng.pipelines[key] = pipe;
     return pipe;
@@ -437,11 +652,14 @@ bool textureToGpu(VkStubTexture* t)
     graphics::VkFrame* fr = graphics::vk_frame();
     VkDevice dev = fr->device;
 
+    const VkFormat fmt = t->isLuminance() ? VK_FORMAT_R8_UNORM : VK_FORMAT_R8G8B8A8_UNORM;
+    const VkDeviceSize bytes = (VkDeviceSize)t->w_ * t->h_ * (t->isLuminance() ? 1 : 4);
+
     if(t->image_ == VK_NULL_HANDLE) {
         VkImageCreateInfo ici = {};
         ici.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
         ici.imageType = VK_IMAGE_TYPE_2D;
-        ici.format = VK_FORMAT_R8G8B8A8_UNORM;
+        ici.format = fmt;
         ici.extent.width = t->w_;
         ici.extent.height = t->h_;
         ici.extent.depth = 1;
@@ -468,7 +686,7 @@ bool textureToGpu(VkStubTexture* t)
         vci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
         vci.image = t->image_;
         vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        vci.format = VK_FORMAT_R8G8B8A8_UNORM;
+        vci.format = fmt;
         vci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         vci.subresourceRange.levelCount = 1;
         vci.subresourceRange.layerCount = 1;
@@ -477,7 +695,6 @@ bool textureToGpu(VkStubTexture* t)
     }
 
     if(t->dirty_) {
-        const VkDeviceSize bytes = (VkDeviceSize)t->w_ * t->h_ * 4;
         VkDeviceSize off = 0;
         uint8_t* dst = ringAlloc(bytes, 16, &off);
         if(!dst)
@@ -527,6 +744,51 @@ bool textureToGpu(VkStubTexture* t)
     return true;
 }
 
+void ensureDummyUploaded()
+{
+    if(g_eng.dummy_uploaded)
+        return;
+    graphics::VkFrame* fr = graphics::vk_frame();
+    VkDeviceSize off = 0;
+    uint8_t* dst = ringAlloc(4, 16, &off);
+    if(!dst)
+        return;
+    dst[0] = dst[1] = dst[2] = dst[3] = 0xff; // white
+
+    VkImageSubresourceRange range = {};
+    range.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    range.levelCount = 1;
+    range.layerCount = 1;
+    VkImageMemoryBarrier to_dst = {};
+    to_dst.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    to_dst.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    to_dst.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    to_dst.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    to_dst.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    to_dst.image = g_eng.dummy_image;
+    to_dst.subresourceRange = range;
+    to_dst.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    vkCmdPipelineBarrier(fr->upload_cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &to_dst);
+    VkBufferImageCopy bic = {};
+    bic.bufferOffset = off;
+    bic.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    bic.imageSubresource.layerCount = 1;
+    bic.imageExtent.width = 1;
+    bic.imageExtent.height = 1;
+    bic.imageExtent.depth = 1;
+    vkCmdCopyBufferToImage(fr->upload_cb, g_eng.ring, g_eng.dummy_image,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &bic);
+    VkImageMemoryBarrier to_read = to_dst;
+    to_read.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    to_read.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    to_read.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    to_read.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    vkCmdPipelineBarrier(fr->upload_cb, VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, &to_read);
+    g_eng.dummy_uploaded = true;
+}
+
 VkSampler samplerFromStates()
 {
     const int filt = (g_render_states[gos_State_Filter] != gos_FilterNone) ? 1 : 0;
@@ -534,9 +796,20 @@ VkSampler samplerFromStates()
     return g_eng.samplers[filt * 2 + addr];
 }
 
-VkDescriptorSet descriptorFor(VkImageView view, VkSampler sampler)
+// full descriptor set: 3 texture views (dummy where absent) + 2 UBOs
+VkDescriptorSet descriptorFor(VkImageView views[3], VkSampler sampler)
 {
-    const uint64_t key = (uint64_t)(uintptr_t)view ^ ((uint64_t)(uintptr_t)sampler << 1);
+    ensureDummyUploaded();
+
+    VkBuffer ubo0 = (g_ubo_slots[0] && g_ubo_slots[0]->vk_buffer_) ? g_ubo_slots[0]->vk_buffer_ : g_eng.dummy_ubo;
+    VkBuffer ubo1 = (g_ubo_slots[1] && g_ubo_slots[1]->vk_buffer_) ? g_ubo_slots[1]->vk_buffer_ : g_eng.dummy_ubo;
+
+    uint64_t key = (uint64_t)(uintptr_t)sampler;
+    for(int i = 0; i < 3; ++i)
+        key = key * 31 + (uint64_t)(uintptr_t)(views[i] ? views[i] : g_eng.dummy_view);
+    key = key * 31 + (uint64_t)(uintptr_t)ubo0;
+    key = key * 31 + (uint64_t)(uintptr_t)ubo1;
+
     std::map<uint64_t, VkDescriptorSet>::iterator it = g_eng.dset_cache.find(key);
     if(it != g_eng.dset_cache.end())
         return it->second;
@@ -551,71 +824,118 @@ VkDescriptorSet descriptorFor(VkImageView view, VkSampler sampler)
     if(vkAllocateDescriptorSets(fr->device, &ai, &set) != VK_SUCCESS)
         return VK_NULL_HANDLE;
 
-    VkDescriptorImageInfo dii = {};
-    dii.sampler = sampler;
-    dii.imageView = view;
-    dii.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    VkWriteDescriptorSet w = {};
-    w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    w.dstSet = set;
-    w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    w.descriptorCount = 1;
-    w.pImageInfo = &dii;
-    vkUpdateDescriptorSets(fr->device, 1, &w, 0, NULL);
+    VkDescriptorImageInfo dii[3];
+    VkWriteDescriptorSet w[5] = {};
+    for(int i = 0; i < 3; ++i) {
+        dii[i].sampler = sampler;
+        dii[i].imageView = views[i] ? views[i] : g_eng.dummy_view;
+        dii[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        w[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        w[i].dstSet = set;
+        w[i].dstBinding = i;
+        w[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        w[i].descriptorCount = 1;
+        w[i].pImageInfo = &dii[i];
+    }
+    VkDescriptorBufferInfo dbi[2];
+    dbi[0].buffer = ubo0;
+    dbi[0].offset = 0;
+    dbi[0].range = VK_WHOLE_SIZE;
+    dbi[1].buffer = ubo1;
+    dbi[1].offset = 0;
+    dbi[1].range = VK_WHOLE_SIZE;
+    for(int i = 0; i < 2; ++i) {
+        w[3 + i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        w[3 + i].dstSet = set;
+        w[3 + i].dstBinding = 3 + i;
+        w[3 + i].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        w[3 + i].descriptorCount = 1;
+        w[3 + i].pBufferInfo = &dbi[i];
+    }
+    vkUpdateDescriptorSets(fr->device, 5, w, 0, NULL);
 
     g_eng.dset_cache[key] = set;
     return set;
 }
 
-void fillPushConstants(PushConstants* pc)
+void matToFloats(const mat4& m, float* out /*column-major*/)
 {
-    // mat4 here is row-major storage with row_major-consumed mvp on GL via
-    // setTransform -> glUniformMatrix4fv(transpose=TRUE)? The GL path passes
-    // projection_ directly; vec.h mat4 is row-major and the GL shaders were
-    // fed via setMat4 with transpose enabled upstream. SPIR-V std140 expects
-    // column-major, so transpose here.
-    const mat4& m = g_projection;
+    const float* p = (const float*)m; // row-major storage
     for(int r = 0; r < 4; ++r)
         for(int c = 0; c < 4; ++c)
-            pc->mvp[c * 4 + r] = m[r * 4 + c];
-
-    const vec4 fog = uint32_to_vec4((uint32_t)g_render_states[gos_State_Fog]);
-    pc->fog_color[0] = fog.x;
-    pc->fog_color[1] = fog.y;
-    pc->fog_color[2] = fog.z;
-    pc->fog_color[3] = fog.w;
-
-    pc->flags = g_render_states[gos_State_AlphaTest] ? 1u : 0u;
+            out[c * 4 + r] = p[r * 4 + c];
 }
 
-// shared tail of every immediate draw: pipeline, descriptors, push, draw
+// binds pipeline + descriptors + pushes constants; returns cb or NULL
+VkCommandBuffer setupDraw(ShaderKind sh, TopoKind topo, const gosVertexDeclaration* vdecl,
+                          VkImageView views[3], const PushConstants* pc)
+{
+    graphics::VkFrame* fr = graphics::vk_frame();
+    if(!fr || !fr->frame_active)
+        return NULL;
+    if(!engineInit())
+        return NULL;
+
+    VkDescriptorSet dset = descriptorFor(views, samplerFromStates());
+    if(dset == VK_NULL_HANDLE)
+        return NULL;
+
+    VkPipeline pipe = getPipeline(sh, topo, vdecl);
+    if(pipe == VK_NULL_HANDLE)
+        return NULL;
+
+    VkCommandBuffer cb = fr->draw_cb;
+    if(g_eng.bound_pipeline != pipe) {
+        vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+        g_eng.bound_pipeline = pipe;
+    }
+    vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_eng.pipe_layout,
+                            0, 1, &dset, 0, NULL);
+    vkCmdPushConstants(cb, g_eng.pipe_layout,
+            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+            0, sizeof(PushConstants), pc);
+    return cb;
+}
+
+// immediate-mode draw: vertices copied into the ring
 void emitDraw(ShaderKind sh, TopoKind topo, const gos_VERTEX* vertices, int count,
               const float* foreground /*text only*/)
 {
-    graphics::VkFrame* fr = graphics::vk_frame();
-    if(!fr || !fr->frame_active || count <= 0)
-        return;
-    if(!engineInit())
+    if(count <= 0)
         return;
 
-    // texture (if the shader samples one)
-    VkDescriptorSet dset = VK_NULL_HANDLE;
+    graphics::VkFrame* fr = graphics::vk_frame();
+    if(!fr || !fr->frame_active || !engineInit())
+        return;
+
+    VkImageView views[3] = { NULL, NULL, NULL };
     if(sh != SHADER_VERTEX) {
         DWORD tex_handle = (DWORD)g_render_states[gos_State_Texture];
         VkStubTexture* t = getTexture(tex_handle);
         if(!t || !t->alive_) {
-            // textured shader without a texture: fall back to untextured
-            sh = SHADER_TEXT == sh ? sh : SHADER_VERTEX;
-            if(sh != SHADER_VERTEX)
-                return; // text without font texture — nothing sane to draw
+            static int spewed = 0;
+            if(getenv("MC2_VK_DEBUG") && spewed < 40) {
+                printf("[VKDBG] textured draw with bad handle %u (t=%p alive=%d) count=%d\n",
+                       tex_handle, (void*)t, t ? (int)t->alive_ : -1, count);
+                spewed++;
+            }
+            if(sh == SHADER_TEXT)
+                return; // text without its font texture — nothing sane to draw
+            sh = SHADER_VERTEX;
         } else {
             if(!textureToGpu(t))
                 return;
-            dset = descriptorFor(t->view_, samplerFromStates());
-            if(dset == VK_NULL_HANDLE)
-                return;
+            views[0] = t->view_;
         }
     }
+
+    PushConstants pc = {};
+    matToFloats(g_projection, pc.m0);
+    const vec4 fog = uint32_to_vec4((uint32_t)g_render_states[gos_State_Fog]);
+    pc.v0[0] = fog.x; pc.v0[1] = fog.y; pc.v0[2] = fog.z; pc.v0[3] = fog.w;
+    if(foreground)
+        memcpy(pc.v1, foreground, sizeof(pc.v1));
+    pc.flags = g_render_states[gos_State_AlphaTest] ? 1u : 0u;
 
     VkDeviceSize voff = 0;
     uint8_t* dst = ringAlloc((VkDeviceSize)count * sizeof(gos_VERTEX), 4, &voff);
@@ -623,34 +943,31 @@ void emitDraw(ShaderKind sh, TopoKind topo, const gos_VERTEX* vertices, int coun
         return;
     memcpy(dst, vertices, (size_t)count * sizeof(gos_VERTEX));
 
-    VkPipeline pipe = getPipeline(sh, topo);
-    if(pipe == VK_NULL_HANDLE)
+    VkCommandBuffer cb = setupDraw(sh, topo, NULL, views, &pc);
+    if(!cb)
         return;
-
-    VkCommandBuffer cb = fr->draw_cb;
-    if(g_eng.bound_pipeline != pipe) {
-        vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
-        g_eng.bound_pipeline = pipe;
-    }
-
-    if(dset != VK_NULL_HANDLE)
-        vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_eng.pipe_layout,
-                                0, 1, &dset, 0, NULL);
-
-    PushConstants pc = {};
-    fillPushConstants(&pc);
-    if(foreground)
-        memcpy(pc.foreground, foreground, sizeof(pc.foreground));
-    vkCmdPushConstants(cb, g_eng.pipe_layout,
-            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-            0, sizeof(pc), &pc);
-
     vkCmdBindVertexBuffers(cb, 0, 1, &g_eng.ring, &voff);
     vkCmdDraw(cb, (uint32_t)count, 1, 0, 0);
 }
 
 void engineBeginFrame()
 {
+    // previous frame's fence has been waited — deferred GPU objects are safe
+    if(g_eng.initialized || !g_deferred_images.empty() || !g_deferred_buffers.empty()) {
+        graphics::VkFrame* fr = graphics::vk_frame();
+        for(size_t i = 0; i < g_deferred_images.size(); ++i) {
+            vkDestroyImageView(fr->device, g_deferred_images[i].view, NULL);
+            vkDestroyImage(fr->device, g_deferred_images[i].image, NULL);
+            vkFreeMemory(fr->device, g_deferred_images[i].memory, NULL);
+        }
+        g_deferred_images.clear();
+        for(size_t i = 0; i < g_deferred_buffers.size(); ++i) {
+            vkDestroyBuffer(fr->device, g_deferred_buffers[i].buffer, NULL);
+            vkFreeMemory(fr->device, g_deferred_buffers[i].memory, NULL);
+        }
+        g_deferred_buffers.clear();
+    }
+
     if(!g_eng.initialized)
         return;
     graphics::VkFrame* fr = graphics::vk_frame();
@@ -675,6 +992,105 @@ void engineBeginFrame()
 }
 
 } // anonymous namespace
+
+////////////////////////////////////////////////////////////////////////////////
+// gosBuffer GPU backing
+
+void gosBuffer::ensureGpu()
+{
+    if(vk_buffer_ != VK_NULL_HANDLE || data_.empty())
+        return;
+    graphics::VkFrame* fr = graphics::vk_frame();
+    if(!fr)
+        return;
+    VkBufferUsageFlags usage = 0;
+    switch(type_) {
+        case gosBUFFER_TYPE::VERTEX:  usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT; break;
+        case gosBUFFER_TYPE::INDEX:   usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT; break;
+        case gosBUFFER_TYPE::UNIFORM: usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT; break;
+        default: return;
+    }
+    // uniform buffers get slack so std140 blocks larger than the CPU data
+    // (fixed-size arrays in the shader) stay within the bound range
+    vk_size_ = data_.size();
+    if(type_ == gosBUFFER_TYPE::UNIFORM && vk_size_ < DUMMY_UBO_SIZE)
+        vk_size_ = DUMMY_UBO_SIZE;
+    createHostBuffer(fr->device, vk_size_, usage, &vk_buffer_, &vk_memory_, &mapped_);
+    memcpy(mapped_, data_.data(), data_.size());
+}
+
+void gosBuffer::writeGpu(size_t offset, const void* src, size_t bytes)
+{
+    if(vk_buffer_ != VK_NULL_HANDLE && mapped_ && offset + bytes <= vk_size_)
+        memcpy(mapped_ + offset, src, bytes);
+}
+
+HGOSBUFFER __stdcall gos_CreateBuffer(gosBUFFER_TYPE type, gosBUFFER_USAGE usage,
+        int element_size, uint32_t count, void* pdata)
+{
+    gosBuffer* b = new gosBuffer();
+    b->type_ = type;
+    b->usage_ = usage;
+    b->element_size_ = element_size;
+    b->count_ = count;
+    b->vk_buffer_ = VK_NULL_HANDLE;
+    b->vk_memory_ = VK_NULL_HANDLE;
+    b->mapped_ = NULL;
+    b->vk_size_ = 0;
+    b->data_.resize((size_t)element_size * count, 0);
+    if(pdata)
+        memcpy(b->data_.data(), pdata, b->data_.size());
+    return b;
+}
+
+void __stdcall gos_DestroyBuffer(HGOSBUFFER buffer)
+{
+    if(!buffer)
+        return;
+    if(buffer->vk_buffer_ != VK_NULL_HANDLE) {
+        DeferredBuffer d = { buffer->vk_buffer_, buffer->vk_memory_ };
+        g_deferred_buffers.push_back(d);
+    }
+    for(int i = 0; i < 2; ++i)
+        if(g_ubo_slots[i] == buffer)
+            g_ubo_slots[i] = NULL;
+    delete buffer;
+}
+
+void __stdcall gos_UpdateBuffer(HGOSBUFFER buffer, void* data, size_t offset, size_t num_bytes)
+{
+    gosASSERT(buffer);
+    if(offset + num_bytes <= buffer->data_.size() && data) {
+        memcpy(buffer->data_.data() + offset, data, num_bytes);
+        buffer->writeGpu(offset, data, num_bytes);
+    }
+}
+
+void __stdcall gos_BindBufferBase(HGOSBUFFER buffer, uint32_t slot)
+{
+    if(slot < 2)
+        g_ubo_slots[slot] = buffer;
+}
+
+uint32_t gos_GetBufferSizeBytes(HGOSBUFFER buffer)
+{
+    gosASSERT(buffer);
+    return (uint32_t)buffer->data_.size();
+}
+
+HGOSVERTEXDECLARATION __stdcall gos_CreateVertexDeclaration(gosVERTEX_FORMAT_RECORD* records, int count)
+{
+    gosVertexDeclaration* vd = new gosVertexDeclaration();
+    vd->records_.assign(records, records + count);
+    return vd;
+}
+
+void __stdcall gos_DestroyVertexDeclaration(HGOSVERTEXDECLARATION vdecl)
+{
+    delete vdecl; // pipelines keyed on this pointer stay in the cache; they
+                  // are only ever selected again if the same address recurs,
+                  // which at worst reuses a compatible layout
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 // texture API
@@ -709,6 +1125,8 @@ DWORD __stdcall gos_NewTextureFromMemory(gos_TextureFormat Format, const char* F
     if(pBitmap && Size && img.loadTGA(pBitmap, Size)) {
         fillPixels(t, img);
     } else {
+        if(getenv("MC2_VK_DEBUG"))
+            printf("[VKDBG] loadTGA-from-memory FAILED: '%s' size=%u\n", FileName ? FileName : "?", Size);
         t.w_ = 32;
         t.h_ = 32;
         t.pixels_.resize(32 * 32, 0);
@@ -728,6 +1146,8 @@ DWORD __stdcall gos_NewTextureFromFile(gos_TextureFormat Format, const char* Fil
     if(FileName && img.loadFromFile(FileName)) {
         fillPixels(t, img);
     } else {
+        if(getenv("MC2_VK_DEBUG"))
+            printf("[VKDBG] load-from-file FAILED: '%s'\n", FileName ? FileName : "?");
         t.w_ = 32;
         t.h_ = 32;
         t.pixels_.resize(32 * 32, 0);
@@ -745,11 +1165,22 @@ void __stdcall gos_DestroyTexture(DWORD Handle)
     t->alive_ = false;
     t->pixels_.clear();
     t->pixels_.shrink_to_fit();
-    // GPU objects are destroyed lazily at shutdown (single frame in flight
-    // means the image may still be referenced by the in-flight frame)
+    deferDestroyTextureGpu(t);
 }
 
-void __stdcall gos_LockTexture(DWORD Handle, DWORD /*MipMapSize*/, bool /*ReadOnly*/,
+// the game writes D3D-convention BGRA DWORDs into locked textures; the GL
+// path converts RGBA->BGRA on Lock and back on Unlock — do the same in place
+static void swizzleRB(VkStubTexture* t)
+{
+    DWORD* p = t->pixels_.data();
+    const size_t n = t->pixels_.size();
+    for(size_t i = 0; i < n; ++i) {
+        DWORD c = p[i];
+        p[i] = (c & 0xff00ff00) | ((c & 0xff) << 16) | ((c >> 16) & 0xff);
+    }
+}
+
+void __stdcall gos_LockTexture(DWORD Handle, DWORD /*MipMapSize*/, bool ReadOnly,
         TEXTUREPTR* TextureInfo)
 {
     gosASSERT(TextureInfo);
@@ -757,6 +1188,9 @@ void __stdcall gos_LockTexture(DWORD Handle, DWORD /*MipMapSize*/, bool /*ReadOn
     gosASSERT(t);
     if(t->pixels_.empty())
         t->pixels_.resize((size_t)t->w_ * t->h_, 0);
+    if(!t->isLuminance())
+        swizzleRB(t); // present as BGRA to the caller
+    t->lock_read_only_ = ReadOnly;
     TextureInfo->pTexture = t->pixels_.data();
     TextureInfo->Width = t->w_;
     TextureInfo->Height = t->h_;
@@ -767,7 +1201,11 @@ void __stdcall gos_LockTexture(DWORD Handle, DWORD /*MipMapSize*/, bool /*ReadOn
 void __stdcall gos_UnLockTexture(DWORD Handle)
 {
     VkStubTexture* t = getTexture(Handle);
-    if(t)
+    if(!t)
+        return;
+    if(!t->isLuminance())
+        swizzleRB(t); // back to RGBA for upload
+    if(!t->lock_read_only_)
         t->dirty_ = true;
 }
 
@@ -801,75 +1239,15 @@ const char* __stdcall gos_GetTextureName(DWORD Handle)
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-// buffers / vertex declarations (retained path — still CPU bookkeeping only)
+// render materials
 
-class gosBuffer {
-public:
-    gosBUFFER_TYPE type_;
-    gosBUFFER_USAGE usage_;
-    int element_size_;
-    uint32_t count_;
-    std::vector<uint8_t> data_;
-};
-
-class gosVertexDeclaration {
-public:
-    std::vector<gosVERTEX_FORMAT_RECORD> records_;
-};
-
-HGOSBUFFER __stdcall gos_CreateBuffer(gosBUFFER_TYPE type, gosBUFFER_USAGE usage,
-        int element_size, uint32_t count, void* pdata)
+static MaterialKind materialKindFromName(const char* name)
 {
-    gosBuffer* b = new gosBuffer();
-    b->type_ = type;
-    b->usage_ = usage;
-    b->element_size_ = element_size;
-    b->count_ = count;
-    b->data_.resize((size_t)element_size * count, 0);
-    if(pdata)
-        memcpy(b->data_.data(), pdata, b->data_.size());
-    return b;
+    if(0 == strcmp(name, "gos_vertex_lighted")) return MAT_VERTEX_LIGHTED;
+    if(0 == strcmp(name, "gos_tex_vertex_lighted")) return MAT_TEX_VERTEX_LIGHTED;
+    if(0 == strcmp(name, "gos_YCbCr")) return MAT_YCBCR;
+    return MAT_UNKNOWN;
 }
-
-void __stdcall gos_DestroyBuffer(HGOSBUFFER buffer)
-{
-    delete buffer;
-}
-
-void __stdcall gos_UpdateBuffer(HGOSBUFFER buffer, void* data, size_t offset, size_t num_bytes)
-{
-    gosASSERT(buffer);
-    if(offset + num_bytes <= buffer->data_.size() && data)
-        memcpy(buffer->data_.data() + offset, data, num_bytes);
-}
-
-void __stdcall gos_BindBufferBase(HGOSBUFFER, uint32_t) {}
-
-uint32_t gos_GetBufferSizeBytes(HGOSBUFFER buffer)
-{
-    gosASSERT(buffer);
-    return (uint32_t)buffer->data_.size();
-}
-
-HGOSVERTEXDECLARATION __stdcall gos_CreateVertexDeclaration(gosVERTEX_FORMAT_RECORD* records, int count)
-{
-    gosVertexDeclaration* vd = new gosVertexDeclaration();
-    vd->records_.assign(records, records + count);
-    return vd;
-}
-
-void __stdcall gos_DestroyVertexDeclaration(HGOSVERTEXDECLARATION vdecl)
-{
-    delete vdecl;
-}
-
-////////////////////////////////////////////////////////////////////////////////
-// render materials (retained mech path — no-ops for now)
-
-class gosRenderMaterial {
-public:
-    std::string name_;
-};
 
 HGOSRENDERMATERIAL __stdcall gos_getRenderMaterial(const char* material)
 {
@@ -879,14 +1257,121 @@ HGOSRENDERMATERIAL __stdcall gos_getRenderMaterial(const char* material)
             return mats[i];
     gosRenderMaterial* m = new gosRenderMaterial();
     m->name_ = material ? material : "";
+    m->kind_ = materialKindFromName(m->name_.c_str());
+    m->wvp_ = mat4::identity();
+    m->world_ = mat4::identity();
+    m->projection_ = mat4::identity();
+    if(m->kind_ == MAT_UNKNOWN)
+        SPEW(("GRAPHICS", "VK: unknown render material '%s' — draws with it are dropped\n",
+              m->name_.c_str()));
     mats.push_back(m);
     return m;
 }
 
-void __stdcall gos_ApplyRenderMaterial(HGOSRENDERMATERIAL) {}
-void __stdcall gos_SetRenderMaterialParameterFloat4(HGOSRENDERMATERIAL, const char*, const float*) {}
-void __stdcall gos_SetRenderMaterialParameterMat4(HGOSRENDERMATERIAL, const char*, const float*) {}
-void __stdcall gos_SetRenderMaterialUniformBlockBindingPoint(HGOSRENDERMATERIAL, const char*, uint32_t) {}
+void __stdcall gos_ApplyRenderMaterial(HGOSRENDERMATERIAL material)
+{
+    g_current_material = material;
+}
+
+void __stdcall gos_SetRenderMaterialParameterFloat4(HGOSRENDERMATERIAL material, const char* name, const float* v)
+{
+    gosASSERT(material && name && v);
+    if(0 == strcmp(name, "light_offset_"))
+        material->light_offset_ = vec4(v[0], v[1], v[2], v[3]);
+    else if(0 == strcmp(name, "vp"))
+        material->vp_ = vec4(v[0], v[1], v[2], v[3]);
+    else if(0 == strcmp(name, "texture_crop_size_"))
+        material->texture_crop_size_ = vec4(v[0], v[1], v[2], v[3]);
+    else if(0 == strcmp(name, "scale_offset"))
+        material->scale_offset_ = vec4(v[0], v[1], v[2], v[3]);
+    // others (mirroring GL: unknown uniforms are silently ignored)
+}
+
+void __stdcall gos_SetRenderMaterialParameterMat4(HGOSRENDERMATERIAL material, const char* name, const float* m)
+{
+    gosASSERT(material && name && m);
+    mat4 mm(m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7],
+            m[8], m[9], m[10], m[11], m[12], m[13], m[14], m[15]);
+    if(0 == strcmp(name, "wvp_"))
+        material->wvp_ = mm;
+    else if(0 == strcmp(name, "world_"))
+        material->world_ = mm;
+    else if(0 == strcmp(name, "projection_"))
+        material->projection_ = mm;
+    // "view_", "mvp" etc: silently ignored, same as GL's missing-uniform path
+}
+
+void __stdcall gos_SetRenderMaterialUniformBlockBindingPoint(HGOSRENDERMATERIAL, const char*, uint32_t)
+{
+    // bindings are fixed in the vk shaders (lights=3, scene=4)
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// retained-path draws
+
+static void emitRetainedDraw(gosRenderMaterial* mat, HGOSBUFFER ib, HGOSBUFFER vb,
+                             HGOSVERTEXDECLARATION vdecl)
+{
+    if(!mat || mat->kind_ == MAT_UNKNOWN || !ib || !vb || ib->count_ == 0)
+        return;
+    graphics::VkFrame* fr = graphics::vk_frame();
+    if(!fr || !fr->frame_active || !engineInit())
+        return;
+
+    ib->ensureGpu();
+    vb->ensureGpu();
+    if(ib->vk_buffer_ == VK_NULL_HANDLE || vb->vk_buffer_ == VK_NULL_HANDLE)
+        return;
+
+    ShaderKind sh;
+    PushConstants pc = {};
+    VkImageView views[3] = { NULL, NULL, NULL };
+
+    switch(mat->kind_) {
+        case MAT_VERTEX_LIGHTED:
+            sh = SHADER_VERTEX_LIGHTED;
+            matToFloats(g_projection, pc.m0); // GL's "mvp" for this shader
+            break;
+        case MAT_TEX_VERTEX_LIGHTED: {
+            sh = SHADER_TEX_VERTEX_LIGHTED;
+            matToFloats(mat->wvp_, pc.m0);
+            matToFloats(mat->world_, pc.m1);
+            matToFloats(mat->projection_, pc.m2);
+            memcpy(pc.v0, (const float*)mat->light_offset_, sizeof(pc.v0));
+            memcpy(pc.v1, (const float*)mat->vp_, sizeof(pc.v1));
+            break;
+        }
+        case MAT_YCBCR:
+            sh = SHADER_YCBCR;
+            matToFloats(mat->projection_, pc.m0);
+            memcpy(pc.v0, (const float*)mat->texture_crop_size_, sizeof(pc.v0));
+            memcpy(pc.v1, (const float*)mat->scale_offset_, sizeof(pc.v1));
+            break;
+        default:
+            return;
+    }
+    pc.flags = g_render_states[gos_State_AlphaTest] ? 1u : 0u;
+
+    // textures from render states (tex1..tex3, YCbCr uses all three)
+    const int tex_states[3] = { gos_State_Texture, gos_State_Texture2, gos_State_Texture3 };
+    for(int i = 0; i < 3; ++i) {
+        VkStubTexture* t = getTexture((DWORD)g_render_states[tex_states[i]]);
+        if(t && t->alive_) {
+            if(textureToGpu(t))
+                views[i] = t->view_;
+        }
+    }
+
+    VkCommandBuffer cb = setupDraw(sh, TOPO_TRIS, vdecl, views, &pc);
+    if(!cb)
+        return;
+
+    VkDeviceSize zero = 0;
+    vkCmdBindVertexBuffers(cb, 0, 1, &vb->vk_buffer_, &zero);
+    vkCmdBindIndexBuffer(cb, ib->vk_buffer_, 0,
+            ib->element_size_ == 2 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32);
+    vkCmdDrawIndexed(cb, ib->count_, 1, 0, 0, 0);
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 // fonts / text — real metrics and real rendering (port of the GL drawText)
@@ -1388,7 +1873,7 @@ void __stdcall gos_RenderIndexedArray(gos_VERTEX* pVertexArray, DWORD NumberVert
 {
     if(!pVertexArray || !lpwIndices || NumberIndices == 0)
         return;
-    // expand indices CPU-side (scaffold; index draws come with retained path)
+    // expand indices CPU-side (simple and fine at these sizes)
     std::vector<gos_VERTEX> tris;
     tris.reserve(NumberIndices);
     for(DWORD i = 0; i < NumberIndices; ++i) {
@@ -1400,8 +1885,24 @@ void __stdcall gos_RenderIndexedArray(gos_VERTEX* pVertexArray, DWORD NumberVert
 }
 
 void __stdcall gos_RenderIndexedArray(gos_VERTEX_2UV*, DWORD, WORD*, DWORD) {}
-void __stdcall gos_RenderIndexedArray(HGOSBUFFER, HGOSBUFFER, HGOSVERTEXDECLARATION, const float*) {}
-void __stdcall gos_RenderIndexedArray(HGOSBUFFER, HGOSBUFFER, HGOSVERTEXDECLARATION) {}
+
+void __stdcall gos_RenderIndexedArray(HGOSBUFFER ib, HGOSBUFFER vb, HGOSVERTEXDECLARATION vdecl, const float* mvp)
+{
+    // GL: selects the lighted material by texture state and sets its "mvp"
+    // uniform — which the tex-lighted shader doesn't declare, so only vp and
+    // projection_ actually land there. Mirror that behavior exactly.
+    gosRenderMaterial* mat = gos_getRenderMaterial(
+            g_render_states[gos_State_Texture] ? "gos_tex_vertex_lighted" : "gos_vertex_lighted");
+    mat->vp_ = g_render_viewport;
+    mat->projection_ = g_projection;
+    (void)mvp; // GL's setMat4("mvp") finds no such uniform on these shaders
+    emitRetainedDraw(mat, ib, vb, vdecl);
+}
+
+void __stdcall gos_RenderIndexedArray(HGOSBUFFER ib, HGOSBUFFER vb, HGOSVERTEXDECLARATION vdecl)
+{
+    emitRetainedDraw(g_current_material, ib, vb, vdecl);
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 // renderer lifecycle — mirrors the GL path's structure
