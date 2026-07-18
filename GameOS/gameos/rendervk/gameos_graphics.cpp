@@ -637,6 +637,9 @@ uint8_t* ringAlloc(VkDeviceSize bytes, VkDeviceSize align, VkDeviceSize* out_off
     if(off + bytes > g_eng.ring_size) {
         if(!g_eng.ring_overflowed) {
             SPEW(("GRAPHICS", "VK: ring buffer overflow, draws dropped this frame\n"));
+            if(getenv("MC2_VK_DEBUG"))
+                printf("[VKDBG] ring overflow at %llu bytes, draws dropped this frame\n",
+                       (unsigned long long)off);
             g_eng.ring_overflowed = true;
         }
         return NULL;
@@ -821,8 +824,15 @@ VkDescriptorSet descriptorFor(VkImageView views[3], VkSampler sampler)
     ai.descriptorSetCount = 1;
     ai.pSetLayouts = &g_eng.dset_layout;
     VkDescriptorSet set = VK_NULL_HANDLE;
-    if(vkAllocateDescriptorSets(fr->device, &ai, &set) != VK_SUCCESS)
+    if(vkAllocateDescriptorSets(fr->device, &ai, &set) != VK_SUCCESS) {
+        static int spewed = 0;
+        if(getenv("MC2_VK_DEBUG") && spewed < 40) {
+            printf("[VKDBG] descriptor pool exhausted (%zu sets cached), draw dropped\n",
+                   g_eng.dset_cache.size());
+            spewed++;
+        }
         return VK_NULL_HANDLE;
+    }
 
     VkDescriptorImageInfo dii[3];
     VkWriteDescriptorSet w[5] = {};
