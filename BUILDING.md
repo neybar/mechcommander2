@@ -35,5 +35,12 @@ in this fork.
 
 ## Windows
 
-See `BUILD-WIN.md` (upstream's instructions, uses `3rdparty.zip`). Not yet
-re-verified in this fork.
+See `BUILD-WIN.md` (upstream's instructions). Not yet re-verified in this
+fork — note it references `3rdparty.zip`, which this fork removed as dead
+weight (unused Windows prebuilt binaries, see ENGINEERING_LOG.md); get it
+from alariq's upstream repo if reviving the old `.vcproj` path.
+
+## Git hooks
+
+Optional local pre-push hook (build check + advisory clang-tidy) — see
+`tools/hooks/README.md`.

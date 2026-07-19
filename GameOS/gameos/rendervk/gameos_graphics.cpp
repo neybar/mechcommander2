@@ -46,6 +46,7 @@ static vec4 g_render_viewport(0, 0, 0, 0);
 static mat4 g_projection = mat4::identity();
 
 static char g_last_draw_desc[256]; // MC2_VK_DEBUG: last quad draw of the frame
+static const bool g_vk_debug = getenv("MC2_VK_DEBUG") != NULL;
 
 ////////////////////////////////////////////////////////////////////////////////
 // textures
@@ -649,7 +650,7 @@ uint8_t* ringAlloc(VkDeviceSize bytes, VkDeviceSize align, VkDeviceSize* out_off
     if(off + bytes > g_eng.ring_size) {
         if(!g_eng.ring_overflowed) {
             SPEW(("GRAPHICS", "VK: ring buffer overflow, draws dropped this frame\n"));
-            if(getenv("MC2_VK_DEBUG"))
+            if(g_vk_debug)
                 printf("[VKDBG] ring overflow at %llu bytes, draws dropped this frame\n",
                        (unsigned long long)off);
             g_eng.ring_overflowed = true;
@@ -840,7 +841,7 @@ VkDescriptorSet descriptorFor(VkImageView views[3], VkSampler sampler)
     VkDescriptorSet set = VK_NULL_HANDLE;
     if(vkAllocateDescriptorSets(fr->device, &ai, &set) != VK_SUCCESS) {
         static int spewed = 0;
-        if(getenv("MC2_VK_DEBUG") && spewed < 40) {
+        if(g_vk_debug && spewed < 40) {
             printf("[VKDBG] descriptor pool exhausted (%zu sets cached), draw dropped\n",
                    g_eng.dset_cache.size());
             spewed++;
@@ -938,7 +939,7 @@ void emitDraw(ShaderKind sh, TopoKind topo, const gos_VERTEX* vertices, int coun
         VkStubTexture* t = getTexture(tex_handle);
         if(!t || !t->alive_) {
             static int spewed = 0;
-            if(getenv("MC2_VK_DEBUG") && spewed < 40) {
+            if(g_vk_debug && spewed < 40) {
                 printf("[VKDBG] textured draw with bad handle %u (t=%p alive=%d) count=%d\n",
                        tex_handle, (void*)t, t ? (int)t->alive_ : -1, count);
                 spewed++;
@@ -975,7 +976,7 @@ void emitDraw(ShaderKind sh, TopoKind topo, const gos_VERTEX* vertices, int coun
 
     // MC2_VK_DEBUG: the mouse cursor is the last quad drawn each frame —
     // remember what this draw used so engineBeginFrame can report it
-    if(getenv("MC2_VK_DEBUG") && topo == TOPO_TRIS) {
+    if(g_vk_debug && topo == TOPO_TRIS) {
         DWORD th = (DWORD)g_render_states[gos_State_Texture];
         VkStubTexture* t = getTexture(th);
         snprintf(g_last_draw_desc, sizeof(g_last_draw_desc),
@@ -989,7 +990,7 @@ void emitDraw(ShaderKind sh, TopoKind topo, const gos_VERTEX* vertices, int coun
 
 void engineBeginFrame()
 {
-    if(getenv("MC2_VK_DEBUG")) {
+    if(g_vk_debug) {
         static uint32_t frames = 0;
         static time_t last = 0;
         frames++;
@@ -1173,7 +1174,7 @@ DWORD __stdcall gos_NewTextureFromMemory(gos_TextureFormat Format, const char* F
     if(pBitmap && Size && img.loadTGA(pBitmap, Size)) {
         fillPixels(t, img);
     } else {
-        if(getenv("MC2_VK_DEBUG"))
+        if(g_vk_debug)
             printf("[VKDBG] loadTGA-from-memory FAILED: '%s' size=%u\n", FileName ? FileName : "?", Size);
         t.w_ = 32;
         t.h_ = 32;
@@ -1194,7 +1195,7 @@ DWORD __stdcall gos_NewTextureFromFile(gos_TextureFormat Format, const char* Fil
     if(FileName && img.loadFromFile(FileName)) {
         fillPixels(t, img);
     } else {
-        if(getenv("MC2_VK_DEBUG"))
+        if(g_vk_debug)
             printf("[VKDBG] load-from-file FAILED: '%s'\n", FileName ? FileName : "?");
         t.w_ = 32;
         t.h_ = 32;

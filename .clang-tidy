@@ -1,0 +1,53 @@
+# Curated for a 2001-era Win32/DirectX codebase being ported to modern
+# platforms. Default clang-tidy is tuned for idiomatic modern C++ and would
+# be almost entirely noise here (naming conventions, modernize-* rewrites of
+# perfectly fine legacy code, etc.) — this config keeps the checks that find
+# real bugs and drops the ones that just complain about house style.
+#
+# Deliberately kept:
+# - bugprone-narrowing-conversions: this project's whole ARM64 port has been
+#   full of `long`/`DWORD`/pointer-truncation bugs (see ENGINEERING_LOG.md) —
+#   this is exactly the class of thing worth catching automatically.
+# - clang-analyzer-*: real static-analysis bug detection (leaks, null derefs,
+#   use-after-free), always worth the noise.
+# - portability-*: directly relevant — this project targets macOS/Linux/
+#   Windows from one codebase.
+#
+# Deliberately dropped:
+# - modernize-*: would push wholesale rewrites of vendored/legacy code
+#   (raw loops, C-style casts, NULL, etc.) that isn't this project's to
+#   rewrite wholesale.
+# - readability-*, google-*, llvm-*, fuchsia-*, altera-*, objc-*: house-style
+#   opinions that don't fit a ported legacy codebase.
+# - cppcoreguidelines-*: mostly overlaps with modernize-* concerns here.
+# - bugprone-easily-swappable-parameters: near-100% false positive rate on
+#   any function with 2+ same-type params — not useful signal.
+# - bugprone-reserved-identifier: this codebase's whole porting-shim layer
+#   deliberately defines __stdcall/__cdecl/_GUID/etc. to match the Win32
+#   names the vendored original source expects — that's the point, not a
+#   bug. Measured 32 hits on a single file's includes, all of this kind.
+# - performance-enum-size: micro-optimization nitpick (shrink an enum's
+#   underlying type), not a bug; 41 hits on one file, zero of them
+#   actionable. Pure noise-to-signal loss.
+# - portability-avoid-pragma-once: `#pragma once` is universally supported
+#   by every compiler this project targets; this check is for portability
+#   to compilers nobody's shipping this on.
+
+Checks: >
+  -*,
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-reserved-identifier,
+  clang-analyzer-*,
+  portability-*,
+  -portability-avoid-pragma-once,
+  performance-*,
+  -performance-enum-size
+
+WarningsAsErrors: ''
+
+# Only this project's own headers — not system/Homebrew/Vulkan SDK headers,
+# and not vendored third-party code (thirdparty/pl_mpeg).
+HeaderFilterRegex: '(^|/)(code|mclib|GameOS|Viewer|data_tools|text_tool|tools|gui|misc|res)/.*\.(h|hpp)$'
+
+FormatStyle: none

@@ -1,0 +1,92 @@
+#!/bin/sh
+# Pre-push hook: local build/lint safety net (no git-lfs — this repo doesn't
+# use it; see ENGINEERING_LOG.md for why it was retired).
+#
+# Install (one-time, per clone):
+#   git config core.hooksPath tools/hooks
+#
+# What this does:
+#   1. Rebuilds both build/ (GL) and build-vk/ (Vulkan) if any C/C++ source
+#      changed since diverging from main. BLOCKS the push on a build failure.
+#   2. Runs clang-tidy (this repo's .clang-tidy config) on changed .cpp/.c
+#      files. ADVISORY ONLY — this is a 2001-era codebase being ported
+#      incrementally; a hard block on every pre-existing tidy finding in a
+#      touched file would block nearly every push. Fix what's reasonable,
+#      use judgment on the rest.
+#
+# Skip everything (e.g. a docs-only push, or you know the build is fine):
+#   git push --no-verify
+
+set -u
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root" || exit 1
+
+base_ref="main"
+git rev-parse --verify "$base_ref" >/dev/null 2>&1 || base_ref="origin/main"
+if ! git rev-parse --verify "$base_ref" >/dev/null 2>&1; then
+    echo "pre-push: can't find main or origin/main, skipping build/tidy check"
+    exit 0
+fi
+
+merge_base="$(git merge-base HEAD "$base_ref" 2>/dev/null || true)"
+if [ -z "$merge_base" ]; then
+    echo "pre-push: no merge-base with $base_ref, skipping build/tidy check"
+    exit 0
+fi
+
+changed_files="$(git diff --name-only "$merge_base" HEAD -- '*.cpp' '*.h' '*.hpp' '*.c' | grep -v '^thirdparty/')"
+
+if [ -z "$changed_files" ]; then
+    echo "pre-push: no C/C++ changes since $base_ref, skipping build/tidy check"
+    exit 0
+fi
+
+echo "pre-push: changed C/C++ files since $base_ref:"
+echo "$changed_files" | sed 's/^/  /'
+
+# --- 1. build check (blocking) ---
+if [ -d build-vk ]; then
+    echo "pre-push: rebuilding build-vk (Vulkan)..."
+    if ! cmake --build build-vk -j8 > /tmp/mc2-prepush-build-vk.log 2>&1; then
+        echo "pre-push: BUILD FAILED (build-vk). Last 40 lines:"
+        tail -40 /tmp/mc2-prepush-build-vk.log
+        echo "pre-push: push blocked. Fix the build, or 'git push --no-verify' to override."
+        exit 1
+    fi
+fi
+
+if [ -d build ]; then
+    echo "pre-push: rebuilding build (GL)..."
+    if ! cmake --build build -j8 > /tmp/mc2-prepush-build-gl.log 2>&1; then
+        echo "pre-push: BUILD FAILED (build/GL). Last 40 lines:"
+        tail -40 /tmp/mc2-prepush-build-gl.log
+        echo "pre-push: push blocked. Fix the build, or 'git push --no-verify' to override."
+        exit 1
+    fi
+fi
+echo "pre-push: build OK"
+
+# --- 2. clang-tidy on changed .cpp/.c files (advisory only, never blocks) ---
+CLANG_TIDY="${CLANG_TIDY:-clang-tidy}"
+if ! command -v "$CLANG_TIDY" >/dev/null 2>&1 && [ -x /opt/homebrew/opt/llvm/bin/clang-tidy ]; then
+    CLANG_TIDY=/opt/homebrew/opt/llvm/bin/clang-tidy
+fi
+
+if command -v "$CLANG_TIDY" >/dev/null 2>&1 && [ -f build-vk/compile_commands.json ]; then
+    echo "pre-push: running clang-tidy on changed translation units (advisory)..."
+    sdk="$(xcrun --show-sdk-path 2>/dev/null || true)"
+    tidy_args=""
+    [ -n "$sdk" ] && tidy_args="--extra-arg=--sysroot=$sdk"
+    echo "$changed_files" | while IFS= read -r f; do
+        case "$f" in
+            *.cpp|*.c) [ -f "$f" ] && "$CLANG_TIDY" -p build-vk $tidy_args "$f" 2>/dev/null ;;
+            *) ;; # headers get analyzed via whatever .cpp includes them
+        esac
+    done
+    echo "pre-push: clang-tidy findings above are advisory — they do not block the push."
+else
+    echo "pre-push: clang-tidy not available or no compile_commands.json, skipping lint check"
+fi
+
+exit 0
