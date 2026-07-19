@@ -21,13 +21,14 @@ must be unpacked on disk).
 
 Dev hooks: `MC2_AUTOQUIT_SECS=N` (clean quit after N secs),
 `./mc2 -mission mc2_01` (skip menus/logistics, quickstart lance),
-`MC2_DEBUG_INPUT=1` (per-second mouse coordinate-chain dump).
+`MC2_DEBUG_INPUT=1` (per-second mouse coordinate-chain dump),
+`./mc2 -assetdir <path>` / `MC2_ASSET_DIR=<path>` (run from any CWD; see
+BUILDING.md — AD-4, done 2026-07-18).
 
 Next: M2 (Vulkan renderer), starting with the renderer abstraction audit
 (gos/MLR boundary — where does a Vulkan backend plug in). GitHub remote
-deferred by user (still no backup — revisit). Carried forward: AD-4
-(asset-dir config + friendly missing-assets message); minor: clamp
-resolution requests to usable display bounds; load-screen exit animation
+deferred by user (still no backup — revisit). Carried forward: minor:
+clamp resolution requests to usable display bounds; load-screen exit animation
 draws 800x600-sized in a corner over the already-switched full-res mission
 (loadscreen.cpp:470 applies prefs before the out-anim plays — fix: delay
 applyPrefs until anim done, or scale legacy GUI coords to viewport).

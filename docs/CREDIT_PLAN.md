@@ -62,8 +62,12 @@ that discipline is what makes model switches cheap.
    (`tools/hooks/`, build check + advisory clang-tidy) added instead of
    a GitHub Action — revisit CI at M3. `upstream` (alariq/mc2) remote
    removed entirely per user request.
-8. **AD-4: asset-dir config + friendly missing-assets message**. —
-   **SONNET** (clear spec in ROADMAP). **Not started.**
+8. ~~**AD-4: asset-dir config + friendly missing-assets message**~~ DONE
+   (2026-07-18): `-assetdir <path>` / `MC2_ASSET_DIR` env var + upfront
+   `data/` validation, single `chdir()` covers all existing relative-path
+   code. Found (not fixed, logged) a related bug: missing single files
+   post-startup hit a retry loop that hangs forever because `MessageBox`
+   is stubbed to a no-op on this port.
 9. **Clamp window-size requests to usable display bounds** (minor). —
    **SONNET**. **Not started.**
 

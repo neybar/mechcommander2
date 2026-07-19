@@ -64,6 +64,11 @@ bool		  File::logFileTraffic = FALSE;
 
 FilePtr fileTrafficLog = NULL;
 char CDInstallPath[1024] = {0};
+// AD-4: user-supplied asset directory (-assetdir), set in
+// code/mechcmd2.cpp's ParseCommandLine, consumed in
+// GameOS/gameos/gameosmain.cpp. Defined here (not in code/) so it's also
+// resolved when linking Viewer, which shares gameos_main but not code/.
+char assetDirOverride[1024] = {0};
 void EnterWindowMode();
 void EnterFullScreenMode();
 void __stdcall ExitGameOS();
