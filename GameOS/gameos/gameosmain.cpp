@@ -1,5 +1,6 @@
 #include "gameos.hpp"
 #include "gos_render.h"
+#include "platform_io.h" // chdir, getcwd, stat
 #include <stdio.h>
 #include <time.h>
 
@@ -162,6 +163,53 @@ static void draw_screen( void )
 
 extern float frameRate;
 
+// AD-4: -assetdir <path>, parsed in ParseCommandLine (code/mechcmd2.cpp).
+extern char assetDirOverride[];
+
+// AD-4: point the engine at a user-supplied asset install instead of
+// requiring launch-from-game-dir. Every asset path in the codebase
+// (mclib/paths.cpp et al.) is relative to CWD, so resolving down to a
+// chdir() here is enough to cover all of them with no further changes.
+// Runs before InitializeGameEngine() so we fail with a clear message
+// instead of falling into mclib/file.cpp's missing-file retry loop,
+// which hangs forever on this port (see ENGINEERING_LOG).
+static void resolveAssetDirectory()
+{
+    const char* dir = NULL;
+    const char* source = NULL;
+    if (assetDirOverride[0] != '\0') {
+        dir = assetDirOverride;
+        source = "-assetdir";
+    } else if (const char* env = getenv("MC2_ASSET_DIR")) {
+        dir = env;
+        source = "MC2_ASSET_DIR";
+    }
+
+    if (dir) {
+        if (chdir(dir) != 0) {
+            fprintf(stderr,
+                "MC2: can't switch to asset directory '%s' (from %s): %s\n"
+                "Pass a valid MechCommander 2 install directory via -assetdir <path> "
+                "or the MC2_ASSET_DIR environment variable.\n",
+                dir, source, strerror(errno));
+            exit(1);
+        }
+    }
+
+    struct stat st;
+    if (stat("data", &st) != 0 || !S_ISDIR(st.st_mode)) {
+        char cwd[1024] = {0};
+        getcwd(cwd, sizeof(cwd));
+        fprintf(stderr,
+            "MC2: no 'data' directory found in '%s'.\n"
+            "MC2 needs a MechCommander 2 asset install (retail or the Microsoft\n"
+            "shared-source asset set). Point it at one with -assetdir <path>, the\n"
+            "MC2_ASSET_DIR environment variable, or launch mc2 from inside the\n"
+            "install directory.\n",
+            cwd);
+        exit(1);
+    }
+}
 
 #ifndef DISABLE_GAMEOS_MAIN
 int main(int argc, char** argv)
@@ -189,6 +237,8 @@ int main(int argc, char** argv)
 
     delete[] cmdline;
     cmdline = NULL;
+
+    resolveAssetDirectory();
 
     Environment.InitializeGameEngine();
 

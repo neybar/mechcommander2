@@ -174,6 +174,11 @@ extern bool CullPathAreas;
 unsigned long viewObject = 0x0;
 char missionName[1024];
 
+// AD-4: defined in mclib/file.cpp (see there for why); set here from
+// -assetdir, resolved and chdir'd into by gameosmain.cpp before
+// InitializeGameEngine() runs. Empty means "use CWD" (legacy behavior).
+extern char assetDirOverride[];
+
 extern char FileMissingString[];
 extern char CDMissingString[];
 extern char MissingTitleString[];
@@ -2653,6 +2658,13 @@ void ParseCommandLine(const char *command_line)
 		else if (S_stricmp(argv[i], "-datapath") == 0) {
             strncpy(CDInstallPath, argv[i], MAX_PATH);
             CDInstallPath[MAX_PATH-1] = '\0';
+		}
+		else if (S_stricmp(argv[i], "-assetdir") == 0) {
+			i++;
+			if (i < n_args) {
+				strncpy(assetDirOverride, argv[i], MAX_PATH - 1);
+				assetDirOverride[MAX_PATH - 1] = '\0';
+			}
 		}
 
 		i++;
