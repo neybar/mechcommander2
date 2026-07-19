@@ -6,6 +6,40 @@ Newest entries at the top. Practice borrowed from the
 
 ---
 
+## 2026-07-18 — AD-4: asset-directory config; found a silent-forever-hang on missing assets
+
+Task 8 from the credit plan. Every asset path in the codebase (`mclib/paths.cpp`
+globals, `FullPathFileName::init`, `File::open`, `FastFile::open`) is a
+hardcoded string relative to the process CWD — there was no base-directory
+concept anywhere, hence "must launch from the game dir."
+
+**Fix:** resolve an asset root at startup (`-assetdir <path>` CLI flag >
+`MC2_ASSET_DIR` env var > CWD, unchanged default) and `chdir()` into it in
+`GameOS/gameos/gameosmain.cpp::resolveAssetDirectory()`, called right after
+`GetGameOSEnvironment()` and before `Environment.InitializeGameEngine()`. Since
+every path in the codebase is CWD-relative, one `chdir()` covers all of them —
+no changes needed to `mclib/paths.cpp` or any path-construction code. The
+resolved root is validated (a `data/` subdir must exist) before proceeding;
+`assetDirOverride` (the parsed `-assetdir` value) lives in `mclib/file.cpp`
+next to `CDInstallPath` rather than in `code/mechcmd2.cpp`, because the
+`Viewer` tool links `gameos_main` (and thus needs the symbol) without linking
+`code/` — same reason `CDInstallPath` lives there.
+
+**Related bug found, not fixed (out of scope for this task):** if a file goes
+missing *after* startup (not the whole asset dir — one file), `File::open`
+(`mclib/file.cpp:264-303`) and `FastFile::open` (`mclib/ffile.cpp`) fall into a
+retry loop that calls `MessageBox()` and checks for `IDCANCEL` to break out.
+On this port `MessageBoxA` is stubbed to a `printf` that always `return 0`
+(`GameOS/src/platform_winuser.cpp:34-38`) — never equal to `IDCANCEL` — so the
+loop never exits: it spams `MSGBOX: ...` to stdout forever with no way to quit
+except killing the process. `Environment.checkCDForFiles = false`
+(`code/mechcmd2.cpp:2689`) would skip the whole retry path and return a normal
+"not found" error instead; that's the likely fix whenever someone picks this
+up, plus checking whether legitimate legacy CD-swap use cases still need the
+retry loop at all on this port.
+
+---
+
 ## 2026-07-18 — Solo Mission screen verified on Vulkan (task 5, PASS); devinput focus gotcha found
 
 First test of the "Solo Mission" flow (main menu's `SOLO MISSION` button →

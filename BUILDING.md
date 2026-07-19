@@ -24,8 +24,20 @@ Produces `build/mc2` (arm64 Mach-O), plus the `viewer` and asset tools
 (`makefst`, `makersp`, `pak`).
 
 Running the game needs user-provided assets (retail install or the
-shared-source data set) — see docs/PROJECT_BRIEF.md. Asset setup is part of
-milestone M1 and not wired up yet.
+shared-source data set) — see docs/PROJECT_BRIEF.md. By default mc2 looks
+for a `data/` directory in its current working directory (so launching
+from inside your asset install "just works", as before). To run it from
+anywhere else, point it at your asset directory one of two ways:
+
+```sh
+build/mc2 -assetdir ~/Games/mc2-port
+# or
+MC2_ASSET_DIR=~/Games/mc2-port build/mc2
+```
+
+(`-assetdir` wins if both are set.) If the directory doesn't exist or
+doesn't contain a `data/` subdirectory, mc2 prints a message explaining
+what's wrong and exits, instead of launching into a broken state.
 
 ## Linux
 

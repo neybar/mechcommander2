@@ -16,9 +16,11 @@ per the project owner: a clean build on macOS is the first success condition.
 
 ## M1 — Boots and renders on macOS (OpenGL bootstrap)  ✅ complete (2026-07-17)
 
-- [ ] Asset-directory configuration + friendly missing-assets message (AD-4)
-      — *carried forward: game must be launched from the game dir; no friendly
-      error yet. Revisit alongside the GitHub/public-readiness work.*
+- [x] Asset-directory configuration + friendly missing-assets message (AD-4)
+      — done 2026-07-18: `-assetdir <path>` / `MC2_ASSET_DIR` env var let mc2
+      run from any CWD; a missing/invalid asset dir now prints a clear message
+      and exits instead of the old launch-from-game-dir requirement. See
+      ENGINEERING_LOG.
 - [x] Game reaches the main menu with user-provided assets
 - [x] One mission loads and is playable (FMVs may be skipped — Bink, see hazards)
 - [x] Triage list of what's broken (audio, input, rendering artifacts)
