@@ -24,36 +24,48 @@ that discipline is what makes model switches cheap.
 
 ### Now (M2 close-out)
 
-1. **Commit the dev input tools** (mousemove/clickat/sendkeys Swift
-   sources from the session scratchpad → `tools/devinput/`, tiny README;
-   scratchpads are session-scoped and these enable all headless GUI
-   testing). — **SONNET**
-2. **Review + merge `m2/backend-split` to main** (user reviews; merge
-   mechanics, branch tidy). — **SONNET**
-3. **vk in-game resolution switching**: scripted test matrix (windowed/
-   fullscreen × a few resolutions, screenshots, clean-exit checks) using
-   the dev input tools. — **SONNET** to test; **OPUS** to fix what
-   breaks; **FABLE** only if it smells like a swapchain/present contract
-   bug (escalate with logs).
+1. ~~**Commit the dev input tools**~~ DONE (2026-07-18): `tools/devinput/`
+   (mousemove/clickat/sendkeys + README), merged to main.
+2. ~~**Review + merge `m2/backend-split` to main**~~ DONE (2026-07-18).
+3. ~~**vk in-game resolution switching test matrix**~~ DONE (2026-07-18):
+   windowed/fullscreen × several resolutions tested. Found a real,
+   unrelated bug — intermittent (~27%) SIGSEGV in `SoundEngine::destroy()`
+   on clean shutdown, reproducing on every config tested, not
+   resolution-specific. Logged in ENGINEERING_LOG, **still open, needs an
+   OPUS fix pass** (own root-cause hypothesis already written up: audio
+   callback-thread teardown race). Resolution-mismatch-causes-visible-
+   breakage theory investigated and ruled out.
 4. **Effects/transparency parity sweep**: user plays later campaign
    missions on vk (free!); for anything off, GL-vs-vk screenshot pairs +
    MC2_VK_DEBUG log land in a bug note. — user + **SONNET** intake;
    **OPUS** for blend/state fixes; **FABLE** for anything that looks
-   like today's descriptor-collision class.
-5. **Solo Mission screen check** (untested since M1). — **SONNET**
-   test-and-report; escalate fixes as above.
-6. **Strip/organize vk debug instrumentation** (keep MC2_VK_DEBUG and
-   MC2_VK_NO_DSET_CACHE, tidy anything ad-hoc). — **SONNET**
+   like today's descriptor-collision class. **Not started.**
+5. ~~**Solo Mission screen check**~~ DONE (2026-07-18): first test since
+   M1, first-ever on vk. Full chain (list → select → briefing → mech bay
+   → back → reopen, no duplication → exit) verified clean.
+6. ~~**Strip/organize vk debug instrumentation**~~ DONE (2026-07-18):
+   consolidated 7 `getenv("MC2_VK_DEBUG")` call sites into one cached
+   flag.
 
 ### Soon (risk + hygiene)
 
-7. **GitHub private remote + git-LFS push** (license audit already done,
-   OQ-7; this is the only backup of months of work — overdue). —
-   **SONNET**
+7. ~~**GitHub remote + push**~~ DONE (2026-07-18): public repo at
+   github.com/neybar/mechcommander2. Went **public**, not private (user
+   call). Pre-push asset audit purged a real retail-data leak
+   (`Viewer/mission.fst`, 20MB of actual packed mission data — see
+   ENGINEERING_LOG) and unused Windows-only `3rdparty.zip` from all
+   history via `git filter-repo`. README rewritten (was a verbatim copy
+   of alariq's). `main` now **branch-protected** (PR required, admin
+   enforcement on, force-push/deletion disabled) after a repeat incident
+   of committing straight to main — see feedback-git-branches memory.
+   git-lfs fully retired (nothing left to track). Local pre-push hook
+   (`tools/hooks/`, build check + advisory clang-tidy) added instead of
+   a GitHub Action — revisit CI at M3. `upstream` (alariq/mc2) remote
+   removed entirely per user request.
 8. **AD-4: asset-dir config + friendly missing-assets message**. —
-   **SONNET** (clear spec in ROADMAP)
+   **SONNET** (clear spec in ROADMAP). **Not started.**
 9. **Clamp window-size requests to usable display bounds** (minor). —
-   **SONNET**
+   **SONNET**. **Not started.**
 
 ### M2 perf pass
 
