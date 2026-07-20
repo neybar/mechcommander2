@@ -74,7 +74,24 @@ that discipline is what makes model switches cheap.
    this), `CPrefs::applyPrefs` clamps `resolutionX/Y` to it before
    `gos_SetScreenMode`. Single fix point covers boot + mission-load switch.
    Verified via `MC2_AUTOQUIT_SECS` with an oversized `options.cfg` value —
-   see ENGINEERING_LOG.
+   see ENGINEERING_LOG. **Lead review (2026-07-20) surfaced two follow-ups —
+   9a and doc fix below; both are refinements, not regressions.**
+9a. **Snap the resolution clamp to the nearest enumerated display mode**:
+    task 9 clamps to the raw desktop bounds (`SDL_GetDesktopDisplayMode`,
+    e.g. 3008x1692), which produces a resolution that isn't one of the modes
+    the in-game Options dropdown enumerates *and* isn't one of the widths
+    `controlgui.cpp` (~2648) recognizes — so an oversized config silently
+    falls into the generic `else → buttonlayout1920.fit` HUD-layout path.
+    Safe (that fallback exists) and strictly better than the old unclamped
+    window, but inconsistent with the dropdown and with the earlier
+    "fall back exact → size-only → closest-area" logic from the 2026-07-17
+    resolution work. Reuse that enumeration + closest-fit path so a clamped
+    value is always a real supported mode that hits a matched HUD layout.
+    Secondary: the clamp only logs via `SPEW`, which is compiled out of the
+    default RelWithDebInfo build (`_ARMOR` is Debug-only), so a user who hits
+    it in a shipping build gets no feedback — consider `SPEWALWAYS`/`printf`
+    if visibility matters. Not started. — **SONNET** (well-scoped; reuses
+    existing mode-enumeration code).
 10. **Audit pre-existing clang-tidy warnings**: the pre-push hook has been
     running clang-tidy advisory-only (doesn't block pushes) since the
     GitHub-remote task, and every recent PR's build log has been full of
@@ -122,6 +139,16 @@ that discipline is what makes model switches cheap.
 16. **F5/F8 quick save/load hotkeys + "Game saved" toast**. — **SONNET**
     (spec: mirror PauseWindow guards, table entry in missiongui.cpp,
     controlGui.setChatText feedback)
+
+### Doc hygiene (batch when convenient)
+
+17. **Fix a drifted line-reference in ENGINEERING_LOG**: the 2026-07-18 AD-4
+    entry cites `code/mechcmd2.cpp:2689` for `Environment.checkCDForFiles`,
+    but the line has since drifted to **2701** (and its current value is
+    `true`; the entry describes flipping it to `false` as the proposed fix
+    for the missing-file retry-loop hang, which is still accurate in intent).
+    Surfaced by the 2026-07-20 lead review. Trivial. — **SONNET** (fold into
+    any nearby docs PR rather than spending a session on it alone).
 
 ### Standing FABLE-only items
 
