@@ -75,10 +75,28 @@ that discipline is what makes model switches cheap.
    `gos_SetScreenMode`. Single fix point covers boot + mission-load switch.
    Verified via `MC2_AUTOQUIT_SECS` with an oversized `options.cfg` value —
    see ENGINEERING_LOG.
+10. **Audit pre-existing clang-tidy warnings**: the pre-push hook has been
+    running clang-tidy advisory-only (doesn't block pushes) since the
+    GitHub-remote task, and every recent PR's build log has been full of
+    warnings on files the PR didn't touch — macro-parentheses in
+    `gameos.hpp`/`platform_winbase.h`, narrowing-conversion warnings
+    scattered through `warrior.h` and similar legacy files,
+    uninitialized-field warnings, unnecessary-value-param perf warnings.
+    We've been treating these as "pre-existing, unrelated, ignore" one PR
+    at a time without ever actually triaging the backlog. Categorize each
+    warning class as (a) safe and worth fixing, (b) inherent to legacy
+    Microsoft-era code / not worth the diff churn, or (c) possibly hiding
+    a real bug — the narrowing conversions in particular are exactly the
+    class of x86-assumption bug this port has hit before (see
+    ENGINEERING_LOG's LP64/Darwin `unsigned long` entries). Not started.
+    — **SONNET** triage/categorize (read-only judgment call, no code
+    changes); **OPUS** for fixes beyond trivial one-liners; escalate to
+    **FABLE** only if triage surfaces something that looks like a real
+    correctness bug rather than style.
 
 ### M2 perf pass
 
-10. **vk perf pass**: Instruments/MTL_HUD profile first, then the known
+11. **vk perf pass**: Instruments/MTL_HUD profile first, then the known
     naive spots — per-draw descriptor alloc (reuse within frame),
     per-draw push constants, pipeline-cache warmup, ring sizing. Verify
     with MC2_AUTOQUIT_SECS runs + frame timing. — **OPUS** (well-
@@ -87,21 +105,21 @@ that discipline is what makes model switches cheap.
 
 ### M3 (other platforms)
 
-11. **Linux Vulkan build** (CMake, SDL2, real Vulkan drivers vs
+12. **Linux Vulkan build** (CMake, SDL2, real Vulkan drivers vs
     MoltenVK differences). — **OPUS**; FABLE for driver-specific
     rendering mysteries only.
-12. **Windows Vulkan build**. — **OPUS**, same escalation.
+13. **Windows Vulkan build**. — **OPUS**, same escalation.
 
 ### M4 (release)
 
-13. **.app bundle + MoltenVK dylib packaging, codesigning**. — **OPUS**
+14. **.app bundle + MoltenVK dylib packaging, codesigning**. — **OPUS**
     first time (script it), **SONNET** thereafter.
-14. **README for going public: lineage credits, AI disclosure,
+15. **README for going public: lineage credits, AI disclosure,
     non-commercial license notes**. — **SONNET** draft, user edits.
 
 ### Future enhancements (post-parity, user-approved concepts)
 
-15. **F5/F8 quick save/load hotkeys + "Game saved" toast**. — **SONNET**
+16. **F5/F8 quick save/load hotkeys + "Game saved" toast**. — **SONNET**
     (spec: mirror PauseWindow guards, table entry in missiongui.cpp,
     controlGui.setChatText feedback)
 
