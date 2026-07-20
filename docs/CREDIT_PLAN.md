@@ -74,25 +74,77 @@ that discipline is what makes model switches cheap.
    this), `CPrefs::applyPrefs` clamps `resolutionX/Y` to it before
    `gos_SetScreenMode`. Single fix point covers boot + mission-load switch.
    Verified via `MC2_AUTOQUIT_SECS` with an oversized `options.cfg` value —
-   see ENGINEERING_LOG.
+   see ENGINEERING_LOG. **Lead review (2026-07-20) surfaced two follow-ups —
+   9a and doc fix below; both are refinements, not regressions.**
+9a. **Snap the resolution clamp to the nearest enumerated display mode**:
+    task 9 clamps to the raw desktop bounds (`SDL_GetDesktopDisplayMode`,
+    e.g. 3008x1692), which produces a resolution that isn't one of the modes
+    the in-game Options dropdown enumerates *and* isn't one of the widths
+    `controlgui.cpp` (~2648) recognizes — so an oversized config silently
+    falls into the generic `else → buttonlayout1920.fit` HUD-layout path.
+    Safe (that fallback exists) and strictly better than the old unclamped
+    window, but inconsistent with the dropdown and with the earlier
+    "fall back exact → size-only → closest-area" logic from the 2026-07-17
+    resolution work. Reuse that enumeration + closest-fit path so a clamped
+    value is always a real supported mode that hits a matched HUD layout.
+    Secondary: the clamp only logs via `SPEW`, which is compiled out of the
+    default RelWithDebInfo build (`_ARMOR` is Debug-only), so a user who hits
+    it in a shipping build gets no feedback — consider `SPEWALWAYS`/`printf`
+    if visibility matters. Not started. — **SONNET** (well-scoped; reuses
+    existing mode-enumeration code).
 10. **Audit pre-existing clang-tidy warnings**: the pre-push hook has been
     running clang-tidy advisory-only (doesn't block pushes) since the
     GitHub-remote task, and every recent PR's build log has been full of
-    warnings on files the PR didn't touch — macro-parentheses in
-    `gameos.hpp`/`platform_winbase.h`, narrowing-conversion warnings
-    scattered through `warrior.h` and similar legacy files,
-    uninitialized-field warnings, unnecessary-value-param perf warnings.
-    We've been treating these as "pre-existing, unrelated, ignore" one PR
-    at a time without ever actually triaging the backlog. Categorize each
-    warning class as (a) safe and worth fixing, (b) inherent to legacy
-    Microsoft-era code / not worth the diff churn, or (c) possibly hiding
-    a real bug — the narrowing conversions in particular are exactly the
-    class of x86-assumption bug this port has hit before (see
-    ENGINEERING_LOG's LP64/Darwin `unsigned long` entries). Not started.
-    — **SONNET** triage/categorize (read-only judgment call, no code
-    changes); **OPUS** for fixes beyond trivial one-liners; escalate to
-    **FABLE** only if triage surfaces something that looks like a real
-    correctness bug rather than style.
+    warnings on files the PR didn't touch. We've been treating these as
+    "pre-existing, unrelated, ignore" one PR at a time without ever
+    triaging the backlog. Not started.
+
+    **Lead review (2026-07-20) ran the config and measured the pile — it
+    is not one uniform backlog. Split the work by warning class, because
+    the two highest-volume checks are exactly this port's two documented
+    bug classes, so the *judgment* (is this site safe?) is the hard part
+    there, not the fix. Do NOT assign a single model to the whole task.**
+
+    Representative per-file counts and model assignment:
+
+    - **Noise tier — SONNET** (categorize + dispose via `.clang-tidy`
+      suppressions with a documented rationale, mirroring the curation the
+      config already models; low correctness stakes):
+      `bugprone-macro-parentheses` (~78–91/file, the Win32 `__stdcall`/
+      `DWORD` shim macros), `performance-unnecessary-value-param`
+      (~17–34), `bugprone-switch-missing-default-case` (~2–16),
+      `bugprone-branch-clone` (~3–13).
+    - **Correctness tier — OPUS** (per-site reading with the ARM64/LP64
+      and non-virtual-dispatch hazard model in mind; a wrong "safe"
+      verdict here silently *reintroduces* a bug the check caught, so this
+      is the judgment-heavy core, not cheap bucketing):
+      - `bugprone-narrowing-conversions` (~130–300/file) — `long→int`,
+        `unsigned long→long`, `DWORD→int` truncation, the exact LP64/ARM64
+        class behind the ENGINEERING_LOG `unsigned long`-overload battles,
+        mixed in with harmless `double→float` graphics math that must be
+        told apart from it.
+      - `bugprone-derived-method-shadowing-base-method` (~150–170/file) —
+        **same category as the GOSImagePool non-virtual-destructor bug**
+        (ENGINEERING_LOG 2026-07-16): mostly intentional Singleton/CRTP
+        patterns, but a base-pointer call to a shadowed non-virtual method
+        silently runs the wrong version. Not safe to bulk-suppress unseen.
+      - the low-count long tail, each worth a real look:
+        `bugprone-infinite-loop`, `bugprone-integer-division`,
+        `bugprone-incorrect-roundings`, `bugprone-signed-char-misuse`,
+        `bugprone-unhandled-self-assignment`,
+        `bugprone-implicit-widening-of-multiplication-result`.
+    - **FABLE** — only if OPUS triage confirms a *live* truncation/dispatch
+      corruption bug rather than a benign-but-flagged conversion.
+
+    If forced to pick one model for the whole task instead of splitting:
+    **OPUS** — the narrowing-conversion analysis is the crux and getting it
+    wrong reintroduces the port's signature bug, which outweighs the credit
+    savings of running it on SONNET.
+
+    Aside for whoever picks this up: tidy also reports ~1
+    `clang-diagnostic-error` per file under the hook's invocation — likely
+    a header-filter/standalone-compile artifact, but glance at it so the
+    advisory hook isn't silently degraded.
 
 ### M2 perf pass
 
@@ -122,6 +174,16 @@ that discipline is what makes model switches cheap.
 16. **F5/F8 quick save/load hotkeys + "Game saved" toast**. — **SONNET**
     (spec: mirror PauseWindow guards, table entry in missiongui.cpp,
     controlGui.setChatText feedback)
+
+### Doc hygiene (batch when convenient)
+
+17. **Fix a drifted line-reference in ENGINEERING_LOG**: the 2026-07-18 AD-4
+    entry cites `code/mechcmd2.cpp:2689` for `Environment.checkCDForFiles`,
+    but the line has since drifted to **2701** (and its current value is
+    `true`; the entry describes flipping it to `false` as the proposed fix
+    for the missing-file retry-loop hang, which is still accurate in intent).
+    Surfaced by the 2026-07-20 lead review. Trivial. — **SONNET** (fold into
+    any nearby docs PR rather than spending a session on it alone).
 
 ### Standing FABLE-only items
 
