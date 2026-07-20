@@ -462,6 +462,32 @@ int CPrefs::applyPrefs(bool applyRes) {
             }
         }
 
+        // gos_CreateWindow() above brings up the SDL video subsystem (lazily,
+        // on first call), so the desktop-mode query only works from here on.
+        int desktopW = 0, desktopH = 0, desktopBpp = 0;
+        bool haveDesktopMode = gos_GetDesktopDisplayMode(this->displayNumber, &desktopW, &desktopH, &desktopBpp);
+        if (!haveDesktopMode && this->displayNumber != 0)
+        {
+            // DisplayNumber from options.cfg may reference a display that's no
+            // longer connected (e.g. config saved on a different monitor setup);
+            // fall back to the primary display so the clamp still applies.
+            haveDesktopMode = gos_GetDesktopDisplayMode(0, &desktopW, &desktopH, &desktopBpp);
+        }
+        if (haveDesktopMode)
+        {
+            if (this->resolutionX > desktopW || this->resolutionY > desktopH)
+            {
+                SPEW(("[INIT]", "Requested resolution %dx%d exceeds display %d bounds %dx%d, clamping\n",
+                      this->resolutionX, this->resolutionY, this->displayNumber, desktopW, desktopH));
+                if (this->resolutionX > desktopW)
+                    this->resolutionX = desktopW;
+                if (this->resolutionY > desktopH)
+                    this->resolutionY = desktopH;
+                ::resolutionX = this->resolutionX;
+                ::resolutionY = this->resolutionY;
+            }
+        }
+
         if (renderer == 3)
             gos_SetScreenMode(this->resolutionX, this->resolutionY, bitDepth,0,0,0,true,localFullScreen,0,localWindow,0,localRenderer);
         else

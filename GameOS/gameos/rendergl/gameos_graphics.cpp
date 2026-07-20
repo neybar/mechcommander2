@@ -2852,6 +2852,11 @@ bool gos_GetDisplayModeByIndex(int DisplayIndex, int ModeIndex, int* XRes, int* 
     return graphics::get_display_mode_by_index(DisplayIndex, ModeIndex, XRes, YRes, BitDepth);
 }
 
+bool gos_GetDesktopDisplayMode(int DisplayIndex, int* XRes, int* YRes, int* BitDepth)
+{
+    return graphics::get_desktop_display_mode(DisplayIndex, XRes, YRes, BitDepth);
+}
+
 
 ////////////////////////////////////////////////////////////////////////////////
 // GPU Buffers management code
