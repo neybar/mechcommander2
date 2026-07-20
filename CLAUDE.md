@@ -73,11 +73,13 @@ already fixed (commit `be5ec77`, predates this note) — removed.
   truncation bugs as expected hazards on ARM64.
 - GitHub remote `origin`: github.com/neybar/mechcommander2 (public). Commit in
   small, buildable increments.
-- **Work on feature branches, not main** (`fix/...`, `feat/...`, `m1/...`).
-  `main` is branch-protected (PR required, admin enforcement on) — merge via
-  PR only after the user has seen the result working (or reviewed the diff
-  for non-runnable changes). Docs-only commits may go straight to main.
-  Never rebase/amend anything already merged to main.
+- **Work on feature branches, not main, no exceptions** (`fix/...`,
+  `feat/...`, `docs/...`, `m1/...`). `main` is branch-protected with admin
+  enforcement on — GitHub rejects direct pushes even for docs-only changes,
+  so there's no "docs-only can go straight to main" shortcut anymore. Merge
+  via PR only after the user has seen the result working (or reviewed the
+  diff for non-runnable changes). Never rebase/amend anything already merged
+  to main.
 - No `upstream` remote (alariq/mc2) — removed per user request; see
   Key decisions for why we don't push patches there anyway.
 - Keep an engineering log at `docs/ENGINEERING_LOG.md` (practice borrowed from
