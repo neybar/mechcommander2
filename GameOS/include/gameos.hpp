@@ -3200,6 +3200,7 @@ size_t __stdcall gos_GetMachineInformation( MachineInfo mi, int Param1=0, int Pa
 int gos_GetWindowDisplayIndex();
 int gos_GetNumDisplayModes(int DisplayIndex);
 bool gos_GetDisplayModeByIndex(int DisplayIndex, int ModeIndex, int* XRes, int* YRes, int* BitDepth);
+bool gos_GetDesktopDisplayMode(int DisplayIndex, int* XRes, int* YRes, int* BitDepth);
 
 //
 //

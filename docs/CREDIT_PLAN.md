@@ -68,8 +68,13 @@ that discipline is what makes model switches cheap.
    code. Found (not fixed, logged) a related bug: missing single files
    post-startup hit a retry loop that hangs forever because `MessageBox`
    is stubbed to a no-op on this port.
-9. **Clamp window-size requests to usable display bounds** (minor). —
-   **SONNET**. **Not started.**
+9. ~~**Clamp window-size requests to usable display bounds**~~ DONE
+   (2026-07-20): `gos_GetDesktopDisplayMode` wired up in both backends
+   (existing `graphics::get_desktop_display_mode` helper was unused before
+   this), `CPrefs::applyPrefs` clamps `resolutionX/Y` to it before
+   `gos_SetScreenMode`. Single fix point covers boot + mission-load switch.
+   Verified via `MC2_AUTOQUIT_SECS` with an oversized `options.cfg` value —
+   see ENGINEERING_LOG.
 
 ### M2 perf pass
 

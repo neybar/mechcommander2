@@ -26,12 +26,14 @@ Dev hooks: `MC2_AUTOQUIT_SECS=N` (clean quit after N secs),
 BUILDING.md — AD-4, done 2026-07-18).
 
 Next: M2 (Vulkan renderer), starting with the renderer abstraction audit
-(gos/MLR boundary — where does a Vulkan backend plug in). GitHub remote
-deferred by user (still no backup — revisit). Carried forward: minor:
-clamp resolution requests to usable display bounds; load-screen exit animation
-draws 800x600-sized in a corner over the already-switched full-res mission
-(loadscreen.cpp:470 applies prefs before the out-anim plays — fix: delay
-applyPrefs until anim done, or scale legacy GUI coords to viewport).
+(gos/MLR boundary — where does a Vulkan backend plug in). GitHub remote is
+live: github.com/neybar/mechcommander2 (public, `main` branch-protected,
+PR required — done 2026-07-18, see ENGINEERING_LOG).
+
+Resolution requests are now clamped to the desktop display's bounds
+(2026-07-20, `CPrefs::applyPrefs` in `prefs.cpp`; see ENGINEERING_LOG). The
+load-screen exit-animation/prefs-ordering item once carried forward here was
+already fixed (commit `be5ec77`, predates this note) — removed.
 
 ## Key decisions (context for all work)
 
@@ -69,13 +71,15 @@ applyPrefs until anim done, or scale legacy GUI coords to viewport).
 - Dev machine: Apple Silicon Mac. The original code assumes x86/little-endian
   and 32-bit-era Windows idioms — treat alignment, `long` size, and pointer
   truncation bugs as expected hazards on ARM64.
-- Local git repo, no remote yet. Commit in small, buildable increments.
+- GitHub remote `origin`: github.com/neybar/mechcommander2 (public). Commit in
+  small, buildable increments.
 - **Work on feature branches, not main** (`fix/...`, `feat/...`, `m1/...`).
-  Merge to main only after the user has seen the result working (or reviewed
-  the diff for non-runnable changes). Docs-only commits may go straight to
-  main. Never rebase/amend anything already merged to main.
-- No remote means no backup — worth revisiting (private GitHub remote or a
-  bare repo on another disk).
+  `main` is branch-protected (PR required, admin enforcement on) — merge via
+  PR only after the user has seen the result working (or reviewed the diff
+  for non-runnable changes). Docs-only commits may go straight to main.
+  Never rebase/amend anything already merged to main.
+- No `upstream` remote (alariq/mc2) — removed per user request; see
+  Key decisions for why we don't push patches there anyway.
 - Keep an engineering log at `docs/ENGINEERING_LOG.md` (practice borrowed from
   the Generals Mac port that inspired this project): one entry per significant
   bug hunt or porting battle — symptom, cause, fix. Append entries as part of

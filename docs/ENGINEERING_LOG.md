@@ -6,6 +6,56 @@ Newest entries at the top. Practice borrowed from the
 
 ---
 
+## 2026-07-20 — Clamp window-size requests to usable display bounds
+
+Task 9 from the credit plan. `options.cfg`'s `ResolutionX`/`ResolutionY` (read
+in `CPrefs::load()`, `prefs.cpp`) were never validated against the actual
+display — a stale config (e.g. saved on a bigger monitor) or a hand-edited
+value would flow straight through `CPrefs::applyPrefs()` into
+`gos_CreateWindow`/`gos_SetScreenMode` unclamped. The in-game Options menu was
+already safe (it only offers SDL-enumerated valid modes); the gap was
+specifically config values that bypass that UI.
+
+**Fix:** exposed `SDL_GetDesktopDisplayMode` through the existing `gos_*` API
+surface — `gos_GetDesktopDisplayMode(DisplayIndex, *XRes, *YRes, *BitDepth)`,
+implemented in both backends (`rendergl`/`rendervk` `gameos_graphics.cpp`),
+wrapping the `graphics::get_desktop_display_mode()` helper that already
+existed in both (declared in `GameOS/gameos/gos_render.h`) but wasn't wired up
+to a caller. `CPrefs::applyPrefs()` (`prefs.cpp`) now queries it for
+`this->displayNumber` and clamps `resolutionX`/`resolutionY` down to fit
+before `gos_SetScreenMode`. If the configured `DisplayNumber` doesn't resolve
+(e.g. referencing a disconnected second monitor), falls back to display 0
+rather than silently skipping the clamp. One fix point covers both the boot
+path (`mechcmd2.cpp`) and mission-load resolution switch
+(`loadscreen.cpp:489`) since both funnel through `applyPrefs()`.
+
+**Ordering trap:** the desktop-mode query only works *after*
+`gos_CreateWindow()` has run at least once — SDL's video subsystem isn't
+initialized until `graphics::create_window()` calls `SDL_VideoInit()` lazily
+on first use (`rendergl/gos_render.cpp:73`). Querying before window creation
+(the natural place to put a "clamp before you create the window" check) hit
+`SDL_GetDesktopDisplayMode failed: Video subsystem has not been initialized`
+on cold boot and silently no-opped, since `gos_GetDesktopDisplayMode` returns
+`false` on failure and the clamp code treats "can't determine bounds" as "skip
+clamping." Moved the clamp to after `gos_CreateWindow`/`gos_CreateRenderer`
+but before `gos_SetScreenMode` — the latter is what actually applies the
+steady-state size (`Environment.screenWidth/Height`), so clamping there still
+fully fixes the requested behavior; the initial `gos_CreateWindow` call itself
+still passes the unclamped size for the very first window creation, but SDL
+on macOS appears to fit oversized `SDL_CreateWindow` requests to the display
+on its own (observed: requesting 9999x9999 produced an actual window of
+3008x1571 immediately, no visible oversized flash), and `gos_SetScreenMode`
+corrects it a moment later regardless.
+
+Verified: `MC2_AUTOQUIT_SECS` runs with `ResolutionX/Y = 9999` in
+`options.cfg` (both a Debug build, to see the `SPEW` clamp message —
+`SPEW`/`_ARMOR` is compiled out in the default `RelWithDebInfo` build — and
+the normal build, to confirm no crash/hang) show the clamp firing to the
+dev display's 3008x1692 bounds; a normal in-bounds resolution produces no
+clamp message (no false positives).
+
+---
+
 ## 2026-07-18 — AD-4: asset-directory config; found a silent-forever-hang on missing assets
 
 Task 8 from the credit plan. Every asset path in the codebase (`mclib/paths.cpp`
