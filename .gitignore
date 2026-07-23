@@ -28,6 +28,11 @@ Tools
 !/tools/
 !/tools/devinput/
 !/tools/devinput/**
+# ...but not the binaries swiftc builds from those sources (README has the
+# recipe); extensionless, so they need naming one by one
+/tools/devinput/sendkeys
+/tools/devinput/clickat
+/tools/devinput/mousemove
 .codelite
 *.session
 *.log
