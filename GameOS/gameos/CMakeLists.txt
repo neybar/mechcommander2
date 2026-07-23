@@ -30,6 +30,9 @@ if(MC2_RENDERER STREQUAL "VULKAN")
         rendervk/gameos_graphics.cpp
         rendervk/gos_render.cpp
         )
+    if(APPLE)
+        list(APPEND RENDER_SOURCES rendervk/gos_metal_capture.mm)
+    endif()
 else()
     set(RENDER_SOURCES
         rendergl/gameos_graphics.cpp
@@ -50,4 +53,7 @@ add_library(gameos_main ${MAIN_SRC})
 
 if(MC2_RENDERER STREQUAL "VULKAN")
     target_link_libraries(gameos Vulkan::Vulkan)
+    if(APPLE)
+        target_link_libraries(gameos "-framework Metal" "-framework Foundation")
+    endif()
 endif()

@@ -6,6 +6,56 @@ Newest entries at the top. Practice borrowed from the
 
 ---
 
+## 2026-07-23 — Metal frame capture on MoltenVK, for the black-quad hunt
+
+Not a bug fix — tooling. The vk-only "black/fog-colored ground quad" near the
+Mission 1 drop zone has resisted every printf-style approach: the previous
+round's `MC2_VK_TRACEPX` per-pixel draw trace depends on naming the right
+render-space pixel, and screenshot coordinates don't map to it cleanly (the
+game renders 2048x1080 while `screencapture` returns 6016x3384 at a different
+aspect, so traced pixels kept landing on the wrong terrain). The question is
+"which draw wrote *this* pixel", and that is what a GPU capture answers
+directly.
+
+mc2-vk runs Vulkan on Metal via MoltenVK, so Xcode's Metal frame debugger sees
+the real draws — per-pixel draw history, per-draw blend/depth state, bound
+textures, fragment shader debugging — with no coordinate math at all: click
+the pixel.
+
+**How it's wired:** `rendervk/gos_metal_capture.{h,mm}` (Objective-C++, built
+only on `APPLE`, no-op inline stubs elsewhere). The MTLDevice behind MoltenVK
+comes out through `VK_EXT_metal_objects` (advertised rev 2 on the M4 Pro):
+`VkExportMetalObjectCreateInfoEXT` chained into `VkDeviceCreateInfo::pNext` at
+creation, then `vkExportMetalObjectsEXT` + `VkExportMetalDeviceInfoEXT` to
+read the handle. Capturing the device covers every queue on it, so no
+command-queue export is needed. Capture brackets one frame:
+`metal_capture_frame_begin()` in `vk_begin_frame` after the acquire (past the
+last point the frame can be skipped, before any command buffer opens) and
+`metal_capture_frame_end()` at the tail of `swap_window`. The pairing is exact
+because both sites sit behind the same `frame_active` guard. `frame_end` does
+a `vkDeviceWaitIdle` first — MoltenVK's present command buffer can still be in
+flight, and stopping the capture under it truncates the trace.
+
+**Triggering:** `MC2_VK_CAPTURE_AT_SECS=<n>` captures the first frame past
+that much uptime, one per run, to `MC2_VK_CAPTURE_FILE` (default
+`/tmp/mc2-vk.gputrace`). Time-based rather than hotkey-based because the warp
+repro is already wall-clock scripted (load, sendkeys, settle), so the existing
+scripts need no changes. Requires `METAL_CAPTURE_ENABLED=1` in the
+environment; the entitlement route (`com.apple.security.get-task-allow`)
+turned out not to be necessary for a locally built binary. Nothing is enabled
+unless the env var is set — an ordinary run doesn't even request the device
+extension, so device creation is byte-identical to before.
+
+**Gotcha:** Metal will not overwrite an existing trace, and it fails at
+*stopCapture* — after the frame you wanted is already gone. Init therefore
+`stat`s the output path and refuses up front.
+
+Verified end to end: a 5s smoke capture wrote a 256 MB trace containing the
+CAMetalLayer, heaps and textures. Reading the black-quad trace in Xcode is the
+next step and is at-keyboard work.
+
+---
+
 ## 2026-07-20 — Clamp window-size requests to usable display bounds
 
 Task 9 from the credit plan. `options.cfg`'s `ResolutionX`/`ResolutionY` (read
