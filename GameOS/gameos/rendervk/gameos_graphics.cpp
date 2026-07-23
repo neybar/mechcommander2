@@ -22,7 +22,7 @@
 #include <map>
 #include <string>
 #include <vector>
-
+#include <set>
 static graphics::RenderWindowHandle g_win_h = NULL;
 
 bool g_disable_quads = true;
@@ -47,6 +47,7 @@ static mat4 g_projection = mat4::identity();
 
 static char g_last_draw_desc[256]; // MC2_VK_DEBUG: last quad draw of the frame
 static const bool g_vk_debug = getenv("MC2_VK_DEBUG") != NULL;
+const char* g_dbgSrc = "?"; // MC2_VK_TRACEPX: caller tag set by txmmgr per flush loop
 
 ////////////////////////////////////////////////////////////////////////////////
 // textures
@@ -923,6 +924,18 @@ VkCommandBuffer setupDraw(ShaderKind sh, TopoKind topo, const gosVertexDeclarati
 }
 
 // immediate-mode draw: vertices copied into the ring
+// MC2_VK_TRACEPX="x,y": 2D point-in-triangle test in gos_VERTEX screen space.
+static bool tracepx_inTri(float px, float py,
+        const gos_VERTEX& a, const gos_VERTEX& b, const gos_VERTEX& c)
+{
+    float d1 = (px - b.x) * (a.y - b.y) - (a.x - b.x) * (py - b.y);
+    float d2 = (px - c.x) * (b.y - c.y) - (b.x - c.x) * (py - c.y);
+    float d3 = (px - a.x) * (c.y - a.y) - (c.x - a.x) * (py - a.y);
+    bool neg = (d1 < 0) || (d2 < 0) || (d3 < 0);
+    bool pos = (d1 > 0) || (d2 > 0) || (d3 > 0);
+    return !(neg && pos);
+}
+
 void emitDraw(ShaderKind sh, TopoKind topo, const gos_VERTEX* vertices, int count,
               const float* foreground /*text only*/)
 {
@@ -933,16 +946,62 @@ void emitDraw(ShaderKind sh, TopoKind topo, const gos_VERTEX* vertices, int coun
     if(!fr || !fr->frame_active || !engineInit())
         return;
 
+    // MC2_VK_TRACEPX="x,y": log, in draw order, every distinct 3D pass whose
+    // triangles cover that screen pixel — a headless per-pixel frame debugger
+    // to name the pass painting the fog-coloured apron over the terrain.
+    if(g_vk_debug && count >= 3) {
+        static const char* tpx = getenv("MC2_VK_TRACEPX");
+        if(tpx) {
+            static float TX = -1.f, TY = -1.f;
+            if(TX < 0.f) sscanf(tpx, "%f,%f", &TX, &TY);
+            for(int i = 0; i + 2 < count; i += 3) {
+                if(tracepx_inTri(TX, TY, vertices[i], vertices[i+1], vertices[i+2])) {
+                    DWORD th = (DWORD)g_render_states[gos_State_Texture];
+                    VkStubTexture* tt = getTexture(th);
+                    static std::set<uint64_t> seen;
+                    uint64_t key = ((uint64_t)th << 8)
+                                 ^ ((uint64_t)(unsigned)vertices[i].argb)
+                                 ^ ((uint64_t)g_render_states[gos_State_AlphaMode] << 40);
+                    if(seen.insert(key).second)
+                        printf("[VKDBG] TRACEPX src=%s sh=%d tex=%u '%s' argb=[%08x,%08x,%08x] "
+                               "am=%d texBlend=%d zw=%d zc=%d atest=%d z=%.3f\n",
+                               g_dbgSrc, (int)sh, th,
+                               (tt && tt->alive_) ? tt->name_.c_str() : "<none>",
+                               (unsigned)vertices[i].argb, (unsigned)vertices[i+1].argb,
+                               (unsigned)vertices[i+2].argb,
+                               g_render_states[gos_State_AlphaMode],
+                               g_render_states[gos_State_TextureMapBlend],
+                               g_render_states[gos_State_ZWrite],
+                               g_render_states[gos_State_ZCompare],
+                               g_render_states[gos_State_AlphaTest], vertices[i].z);
+                    break;
+                }
+            }
+        }
+    }
+
     VkImageView views[3] = { NULL, NULL, NULL };
     if(sh != SHADER_VERTEX) {
         DWORD tex_handle = (DWORD)g_render_states[gos_State_Texture];
         VkStubTexture* t = getTexture(tex_handle);
         if(!t || !t->alive_) {
-            static int spewed = 0;
-            if(g_vk_debug && spewed < 40) {
-                printf("[VKDBG] textured draw with bad handle %u (t=%p alive=%d) count=%d\n",
-                       tex_handle, (void*)t, t ? (int)t->alive_ : -1, count);
-                spewed++;
+            // MC2_VK_DEBUG: a textured draw whose handle no longer resolves to a
+            // live texture. It falls back to SHADER_VERTEX (pure vertex color),
+            // so on-screen it becomes a flat quad in its raw argb — this is the
+            // black/white-ground-quad signature. Dedup per handle (not a global
+            // cap) so the culprit can't hide behind load-time churn, and print
+            // enough to place it: intended texture name, vertex count, and the
+            // first vertex's screen x,y + argb.
+            if(g_vk_debug) {
+                static std::set<DWORD> seen_bad;
+                if(seen_bad.insert(tex_handle).second) {
+                    printf("[VKDBG] BADTEX handle=%u name='%s' alive=%d count=%d "
+                           "v0=(%.0f,%.0f,z=%.3f) argb=%08x\n",
+                           tex_handle, t ? t->name_.c_str() : "<unknown>",
+                           t ? (int)t->alive_ : -1, count,
+                           vertices[0].x, vertices[0].y, vertices[0].z,
+                           (unsigned)vertices[0].argb);
+                }
             }
             if(sh == SHADER_TEXT)
                 return; // text without its font texture — nothing sane to draw
@@ -951,6 +1010,38 @@ void emitDraw(ShaderKind sh, TopoKind topo, const gos_VERTEX* vertices, int coun
             if(!textureToGpu(t))
                 return;
             views[0] = t->view_;
+            // MC2_VK_DEBUG: terrain/world tiles are drawn here (SHADER_TEX_VERTEX)
+            // as texture x per-vertex argb. Some tiles come through with an
+            // EXTREME argb (pure white 0x..ffffff -> washed white, or RGB 0 ->
+            // black) that GL renders as normal grey. Log those: which texture,
+            // the argb, count, and the first vertex's screen x,y. Deduped by
+            // (handle, white-vs-black) so the real tiles aren't drowned out.
+            if(g_vk_debug && sh == SHADER_TEX_VERTEX && count > 0) {
+                uint32_t a = (uint32_t)vertices[0].argb;
+                uint32_t rgb = a & 0x00ffffffu;
+                bool white = (rgb == 0x00ffffffu);
+                bool black = (rgb == 0x0u);
+                if(white || black) {
+                    static std::set<uint64_t> seen_ex;
+                    uint64_t k = ((uint64_t)tex_handle << 1) | (white ? 1u : 0u);
+                    if(seen_ex.insert(k).second)
+                        printf("[VKDBG] EXTREME-ARGB %s tex=%u '%s' argb=%08x "
+                               "frgb=%08x fogState=%08x fogW=%.3f "
+                               "alphaMode=%d texBlend=%d zwrite=%d atest=%d "
+                               "count=%d v0=(%.0f,%.0f,z=%.3f)\n",
+                               white ? "WHITE" : "BLACK", tex_handle,
+                               t->name_.c_str(), a,
+                               (uint32_t)vertices[0].frgb,
+                               (uint32_t)g_render_states[gos_State_Fog],
+                               (float)(((uint32_t)vertices[0].frgb >> 24) & 0xffu) / 255.0f,
+                               g_render_states[gos_State_AlphaMode],
+                               g_render_states[gos_State_TextureMapBlend],
+                               g_render_states[gos_State_ZWrite],
+                               g_render_states[gos_State_AlphaTest],
+                               count,
+                               vertices[0].x, vertices[0].y, vertices[0].z);
+                }
+            }
         }
     }
 
@@ -1404,10 +1495,29 @@ static void emitRetainedDraw(gosRenderMaterial* mat, HGOSBUFFER ib, HGOSBUFFER v
     // textures from render states (tex1..tex3, YCbCr uses all three)
     const int tex_states[3] = { gos_State_Texture, gos_State_Texture2, gos_State_Texture3 };
     for(int i = 0; i < 3; ++i) {
-        VkStubTexture* t = getTexture((DWORD)g_render_states[tex_states[i]]);
+        DWORD th = (DWORD)g_render_states[tex_states[i]];
+        VkStubTexture* t = getTexture(th);
         if(t && t->alive_) {
             if(textureToGpu(t))
                 views[i] = t->view_;
+            else if(g_vk_debug) {
+                // live texture that failed GPU upload -> stays NULL -> dummy white
+                static std::set<DWORD> seen_up;
+                if(seen_up.insert(th).second)
+                    printf("[VKDBG] RETAIN slot%d UPLOAD-FAIL kind=%d handle=%u "
+                           "name='%s' -> dummy white\n",
+                           i, (int)mat->kind_, th, t->name_.c_str());
+            }
+        } else if(g_vk_debug && th != 0) {
+            // handle was set by the game but resolves dead/missing -> dummy white.
+            // This is the black/white-terrain signature (SHADER_TEX_VERTEX_LIGHTED
+            // sampling the white dummy, modulated by per-vertex light).
+            static std::set<DWORD> seen_dead;
+            if(seen_dead.insert(th).second)
+                printf("[VKDBG] RETAIN slot%d DEADTEX kind=%d handle=%u "
+                       "(t=%p alive=%d) name='%s' -> dummy white\n",
+                       i, (int)mat->kind_, th, (void*)t,
+                       t ? (int)t->alive_ : -1, t ? t->name_.c_str() : "<null>");
         }
     }
 
