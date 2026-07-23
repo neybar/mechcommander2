@@ -91,3 +91,6 @@ compile_commands.json
 3rdparty.zip
 # MSVC resource-compiler cache, always auto-generated
 *.aps
+# bug-hunt evidence: screenshots and frame captures of the running game, so
+# retail-derived pixels. Findings belong in docs/ENGINEERING_LOG.md instead.
+docs/bugs/
