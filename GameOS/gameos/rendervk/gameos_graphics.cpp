@@ -2032,6 +2032,50 @@ void __stdcall gos_RenderIndexedArray(gos_VERTEX* pVertexArray, DWORD NumberVert
 {
     if(!pVertexArray || !lpwIndices || NumberIndices == 0)
         return;
+
+    // MC2_VK_RIALOG="x,y": for the cement/terrain-hole hunt, log any indexed
+    // draw whose screen-space bbox covers pixel (x,y) — plus a degeneracy check
+    // — so we can see whether a cement tile actually reaches the fog-white apron
+    // and in what shape (missing/mis-placed/degenerate). Cement pads are the
+    // ISCRATERS path (txmmgr.cpp:1164), the only pavement-specific draw.
+    if(g_vk_debug) {
+        static const char* rlog = getenv("MC2_VK_RIALOG");
+        if(rlog) {
+            static float PX = -1.f, PY = -1.f;
+            if(PX < 0.f) sscanf(rlog, "%f,%f", &PX, &PY);
+            float minx = 1e30f, miny = 1e30f, maxx = -1e30f, maxy = -1e30f;
+            float minz = 1e30f, maxz = -1e30f, minw = 1e30f, maxw = -1e30f;
+            bool degenerate = false;
+            for(DWORD i = 0; i < NumberVertices; ++i) {
+                const gos_VERTEX& v = pVertexArray[i];
+                if(v.x < minx) minx = v.x; if(v.x > maxx) maxx = v.x;
+                if(v.y < miny) miny = v.y; if(v.y > maxy) maxy = v.y;
+                if(v.z < minz) minz = v.z; if(v.z > maxz) maxz = v.z;
+                if(v.rhw < minw) minw = v.rhw; if(v.rhw > maxw) maxw = v.rhw;
+                if(!(v.x > -1e6f && v.x < 1e6f) || !(v.y > -1e6f && v.y < 1e6f) ||
+                   !(v.z >= 0.f && v.z <= 1.f) || !(v.rhw > 0.f))
+                    degenerate = true;
+            }
+            bool covers = (PX >= minx && PX <= maxx && PY >= miny && PY <= maxy);
+            if(covers || degenerate) {
+                DWORD th = (DWORD)g_render_states[gos_State_Texture];
+                VkStubTexture* tt = getTexture(th);
+                printf("[VKDBG] RIALOG %s%s tex=%u '%s' nv=%u ni=%u "
+                       "bbox=(%.0f,%.0f)-(%.0f,%.0f) z=[%.4f,%.4f] rhw=[%.5f,%.5f] "
+                       "am=%d zw=%d zc=%d atest=%d\n",
+                       covers ? "COVERS" : "------",
+                       degenerate ? " DEGENERATE" : "",
+                       th, (tt && tt->alive_) ? tt->name_.c_str() : "<none>",
+                       (unsigned)NumberVertices, (unsigned)NumberIndices,
+                       minx, miny, maxx, maxy, minz, maxz, minw, maxw,
+                       g_render_states[gos_State_AlphaMode],
+                       g_render_states[gos_State_ZWrite],
+                       g_render_states[gos_State_ZCompare],
+                       g_render_states[gos_State_AlphaTest]);
+            }
+        }
+    }
+
     // expand indices CPU-side (simple and fine at these sizes)
     std::vector<gos_VERTEX> tris;
     tris.reserve(NumberIndices);

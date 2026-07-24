@@ -97,5 +97,8 @@ compile_commands.json
 # MSVC resource-compiler cache, always auto-generated
 *.aps
 # bug-hunt evidence: screenshots and frame captures of the running game, so
-# retail-derived pixels. Findings belong in docs/ENGINEERING_LOG.md instead.
-docs/bugs/
+# retail-derived pixels. The pixels stay out of git; tracked .md writeups under
+# docs/bugs/ (findings docs) are kept.
+docs/bugs/**
+!docs/bugs/**/
+!docs/bugs/**/*.md
