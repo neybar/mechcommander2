@@ -519,12 +519,24 @@ RenderContextHandle init_render_context(RenderWindowHandle render_window)
     qci.queueCount = 1;
     qci.pQueuePriorities = &prio;
 
+    // Enable depthClamp so the pipeline can turn depth-CLIP off (clamp on),
+    // matching D3D XYZRHW pre-transformed vertices, which are never frustum/
+    // depth-clipped (guard-band only). Vulkan defaults to depth clip; enabling
+    // the feature here lets rasterization state opt into clamp (MC2_VK_DEPTHCLAMP;
+    // see gameos_graphics.cpp). Enabling the capability is harmless on its own.
+    VkPhysicalDeviceFeatures supported_feats = {};
+    vkGetPhysicalDeviceFeatures(ctx->phys_device_, &supported_feats);
+    VkPhysicalDeviceFeatures enabled_feats = {};
+    if(supported_feats.depthClamp)
+        enabled_feats.depthClamp = VK_TRUE;
+
     VkDeviceCreateInfo dci = {};
     dci.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
     dci.queueCreateInfoCount = 1;
     dci.pQueueCreateInfos = &qci;
     dci.enabledExtensionCount = (uint32_t)dev_exts.size();
     dci.ppEnabledExtensionNames = dev_exts.data();
+    dci.pEnabledFeatures = &enabled_feats;
 #ifdef __APPLE__
     if(metal_objects)
         dci.pNext = &export_metal_dev;

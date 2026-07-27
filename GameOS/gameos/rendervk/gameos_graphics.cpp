@@ -44,6 +44,9 @@ static bool g_req_fullscreen = false;
 static float g_viewport[4] = {0, 0, 1, 1}; // top, left, bottom, right
 static vec4 g_render_viewport(0, 0, 0, 0);
 static mat4 g_projection = mat4::identity();
+// MC2_VK_POSVIEWPORT experiment (cement-holes hunt): Y-flip in the projection +
+// positive-height viewport, instead of the default negative-height viewport.
+static bool g_pos_viewport = getenv("MC2_VK_POSVIEWPORT") != NULL;
 
 static char g_last_draw_desc[256]; // MC2_VK_DEBUG: last quad draw of the frame
 static const bool g_vk_debug = getenv("MC2_VK_DEBUG") != NULL;
@@ -555,6 +558,14 @@ VkPipeline getPipeline(ShaderKind sh, TopoKind topo, const gosVertexDeclaration*
     rs.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
     rs.polygonMode = VK_POLYGON_MODE_FILL;
     rs.lineWidth = 1.0f;
+    // MC2_VK_DEPTHCLAMP (experiment, cement-holes hunt): the game feeds D3D
+    // XYZRHW pre-transformed vertices, which D3D never frustum/depth-clips
+    // (guard-band only). Vulkan's default (depthClampEnable=FALSE) turns depth
+    // CLIP on, which can drop coverage those verts assume is kept. Setting clamp
+    // on (=> clip off) matches D3D. Needs the depthClamp device feature (enabled
+    // in gos_render.cpp).
+    static const bool depthClamp = getenv("MC2_VK_DEPTHCLAMP") != NULL;
+    rs.depthClampEnable = depthClamp ? VK_TRUE : VK_FALSE;
     switch(g_render_states[gos_State_Culling]) {
         case gos_Cull_CW:  rs.cullMode = VK_CULL_MODE_BACK_BIT; break;
         case gos_Cull_CCW: rs.cullMode = VK_CULL_MODE_FRONT_BIT; break;
@@ -1118,11 +1129,18 @@ void engineBeginFrame()
     vkResetDescriptorPool(fr->device, g_eng.dpool, 0);
 
     // negative-height viewport = GL clip-space orientation (core in Vk 1.1)
+    // MC2_VK_POSVIEWPORT (experiment, cement-holes hunt): flip Y via the
+    // projection matrix (updateProjection) + a POSITIVE-height viewport instead,
+    // to test whether MoltenVK's negative-viewport emulation is what drops
+    // rasterization coverage on the terrain holes. NOTE: the 3D-model
+    // (ShapeRenderer) path uses its own MVP and relies on this global viewport,
+    // so with the flag on the mechs/buildings render upside down — expected;
+    // only the terrain-hole behavior is the signal here.
     VkViewport vp = {};
     vp.x = 0.0f;
-    vp.y = (float)fr->extent.height;
+    vp.y = g_pos_viewport ? 0.0f : (float)fr->extent.height;
     vp.width = (float)fr->extent.width;
-    vp.height = -(float)fr->extent.height;
+    vp.height = g_pos_viewport ? (float)fr->extent.height : -(float)fr->extent.height;
     vp.minDepth = 0.0f;
     vp.maxDepth = 1.0f;
     vkCmdSetViewport(fr->draw_cb, 0, 1, &vp);
@@ -2135,8 +2153,14 @@ static graphics::RenderContextHandle g_render_ctx = NULL;
 
 static void updateProjection()
 {
+    // Default: Y-flip lives in the negative-height viewport, so the projection's
+    // Y row matches GL exactly (row1 = 0,-2/h,0,1). MC2_VK_POSVIEWPORT experiment:
+    // move the Y-flip here (row1 = 0,+2/h,0,-1) and use a positive-height viewport
+    // — same final upright image, different path through MoltenVK.
+    const float sy = g_pos_viewport ?  2.0f / (float)g_height : -2.0f / (float)g_height;
+    const float ty = g_pos_viewport ? -1.0f : 1.0f;
     g_projection = mat4(2.0f / (float)g_width, 0, 0.0f, -1.0f,
-            0, -2.0f / (float)g_height, 0.0f, 1.0f,
+            0, sy, 0.0f, ty,
             0, 0, 1.0f, 0.0f,
             0, 0, 0.0f, 1.0f);
 }

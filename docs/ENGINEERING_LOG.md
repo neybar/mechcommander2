@@ -6,6 +6,62 @@ Newest entries at the top. Practice borrowed from the
 
 ---
 
+## 2026-07-27 — vk cement-holes: experiments + the D3D→GL→VK clipping research
+
+Used the new `tools/vkprobe` harness to run four gated experiments against the
+cement holes (full detail in `docs/bugs/2026-07-24-vk-cement-holes-FINDINGS.md`).
+All **refuted**: `MC2_CEMENT_SOLID` (DRAWSOLID base — made holes *worse*),
+`MC2_VK_POSVIEWPORT` (Y-flip via projection + positive viewport — unchanged),
+ring-buffer aliasing (refuted by code — `ringAlloc` can't wrap), and
+`MC2_VK_DEPTHCLAMP` (depth clamp on / clip off — unchanged).
+
+Key reframing came from **external research** (per
+[[feedback-external-research]]), which I'd neglected for several sessions:
+`gos_VERTEX` is D3D `D3DFVF_XYZRHW` **pre-transformed** verts, which Direct3D
+**never frustum-clips — guard-band only**. Two VK porting traps follow: (1) depth
+clip vs clamp — Vulkan defaults to clip, DX assumes clamp (`VK_EXT_depth_clip_enable`
+exists for exactly this) — tested and refuted (we already CPU-cull depth to
+[0,1)); (2) XY guard-band clipping of the engine's huge off-screen terrain
+triangles — untested, the leading remaining suspect. Sources: GameDev.net XYZRHW
+clipping threads, MS D3D9 transformed-vertex docs, Vulkan `VK_EXT_depth_clip_enable`
+/ `VK_EXT_depth_clamp_control` docs, MoltenVK + DXVK issue trackers. The
+`MC2_VK_DEPTHCLAMP` path also enables the `depthClamp` device feature in
+`gos_render.cpp` (harmless when the pipeline flag is off).
+
+## 2026-07-25 — Headless renderer-probe harness (`MC2_LOAD_SAVE` + `tools/vkprobe`)
+
+Not a bug fix — tooling, to stop re-deriving the same launch→warp→capture→quit
+dance by hand every bug-hunt session. The black-quad/cement-holes repro lives at
+building 13 (Mission 1), and reaching it meant `-mission mc2_02` then two synthetic
+`sendkeys load` keystrokes (ctrl+alt+shift+Z) 8s apart with the window forced
+frontmost — fragile, and it takes over the desktop *input*, so it can't run
+unattended.
+
+**Engine dev hook `MC2_LOAD_SAVE=<path|1>`** (`code/mission.cpp`,
+`code/mechcmd2.cpp`). `Mission::update()` arms a wall-clock timer on the first
+mission frame and, after `MC2_LOAD_SAVE_SECS` (default 6s), sets the existing
+`loadInMissionSave` flag — the *same* flag the quickload hotkey sets — so the
+proven `mission->load()` path runs with no keyboard input. The handler
+(`mechcmd2.cpp:2277`) resolves the env value: a value containing a path separator
+loads that explicit `.ims`; a bare token like `1` (or the hotkey with the env
+unset) keeps the historical `savePath/testgame.ims`. Wall-clock, not turn-based,
+so a script can predict when the load lands. Gated `#ifndef FINAL`, next to the
+other dev hooks.
+
+**Harness `tools/vkprobe/run.sh`.** Parameterized launch→settle→capture→clean-quit:
+`--save/--load-secs`, `--capture screenshot|gputrace|log`, `--at/--quit`, `--bin`
+(GL vs vk), `--out`. Screenshots via `screencapture -x` (game is
+full-screen-desktop, so a display grab = the game); gputrace wires
+`METAL_CAPTURE_ENABLED` + `MC2_VK_CAPTURE_AT_SECS`; passes through any `MC2_*` the
+caller exported (`MC2_VK_DEBUG`, `TRACEPX`, `RIALOG`, …). Evidence lands under
+`docs/bugs/<date>-vkprobe/` (gitignored — retail-derived pixels).
+
+Validated first run: `run.sh --save 1 --at 45` reached building 13 headlessly and
+the screenshot captured **both** cement-holes symptoms (fog-white square + the
+black band). The game still runs full-screen (covers the display ~60s), so still
+announce before running — but no synthetic input, so it no longer hijacks the
+keyboard/mouse. Note native capture resolution is 6016×3384 (Retina 2×).
+
 ## 2026-07-23 — Metal frame capture on MoltenVK, for the black-quad hunt
 
 Not a bug fix — tooling. The vk-only "black/fog-colored ground quad" near the

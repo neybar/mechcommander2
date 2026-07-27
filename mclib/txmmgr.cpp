@@ -12,6 +12,9 @@
 // Copyright (C) Microsoft Corporation. All rights reserved.                 //
 //===========================================================================//
 
+#include <stdio.h>	// MC2_VERTDUMP: GL-vs-vk vertex-stream diff
+#include <time.h>	// MC2_VERTDUMP: wall-clock arming
+
 #ifndef TXMMGR_H
 #include"txmmgr.h"
 #endif
@@ -897,6 +900,59 @@ void GatherLightsParameters(TG_HWLightsData* lights)
 // then draws all alpha with isTerrain set.
 void MC_TextureManager::renderLists (void)
 {
+	// MC2_VERTDUMP=<path>: one-frame dump of every terrain vertex node — the exact
+	// gos_VERTEX data handed to gos_RenderIndexedArray — so the GL and vk builds'
+	// SUBMITTED vertex streams can be diffed at the same warp (cement-holes hunt).
+	// This lives in shared mclib code, so the dump logic is identical on both
+	// backends: any diff is a real difference in what the game submits (camera /
+	// resolution / projection), which would localize the bug; byte-identical
+	// output proves the divergence is entirely downstream in MoltenVK raster.
+	// Armed after MC2_VERTDUMP_AT_SECS (default 30s); captures the first
+	// renderLists() frame after arming, then stops.
+	{
+		static int vd_done = 0;
+		static const char* vd_path = getenv("MC2_VERTDUMP");
+		if (vd_path && !vd_done)
+		{
+			static time_t vd_t0 = 0;
+			time_t vd_now = time(NULL);
+			if (vd_t0 == 0) vd_t0 = vd_now;
+			double vd_at = 30.0;
+			if (const char* s = getenv("MC2_VERTDUMP_AT_SECS")) vd_at = atof(s);
+			if (difftime(vd_now, vd_t0) >= vd_at)
+			{
+				FILE* vf = fopen(vd_path, "w");
+				if (vf)
+				{
+					fprintf(vf, "# MC2_VERTDUMP renderLists frame nodes=%ld\n",
+						nextAvailableVertexNode);
+					for (long i = 0; i < nextAvailableVertexNode; ++i)
+					{
+						MC_VertexArrayNode& n = masterVertexNodes[i];
+						if (!n.vertices) continue;
+						long total = n.numVertices;
+						if (n.currentVertex != (n.vertices + n.numVertices))
+							total = (long)(n.currentVertex - n.vertices);
+						if (total <= 0) continue;
+						fprintf(vf, "NODE i=%ld flags=%08x texIdx=%u nv=%ld\n",
+							i, (unsigned)n.flags, (unsigned)n.textureIndex, total);
+						for (long v = 0; v < total; ++v)
+						{
+							const gos_VERTEX& g = n.vertices[v];
+							fprintf(vf, "%.4f %.4f %.7f %.7f %.6f %.6f %08x %08x\n",
+								g.x, g.y, g.z, g.rhw, g.u, g.v,
+								(unsigned)g.argb, (unsigned)g.frgb);
+						}
+					}
+					fclose(vf);
+					printf("[VERTDUMP] wrote %s (nodes=%ld)\n",
+						vd_path, nextAvailableVertexNode);
+				}
+				vd_done = 1;
+			}
+		}
+	}
+
 	if (Environment.Renderer == 3)
 	{
 		gos_SetRenderState( gos_State_AlphaMode, gos_Alpha_OneZero);
