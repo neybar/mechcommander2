@@ -13,9 +13,35 @@ The renderer is **Vulkan via MoltenVK** on an **Apple M4 Pro**. The capture was
 taken headlessly with `MVK_CONFIG_AUTO_GPU_CAPTURE_*` (no Xcode involved), so
 everything you see is MoltenVK-generated Metal, not hand-written Metal.
 
-Trace: `docs/bugs/2026-07-27-metal-capture/apron_095408.gputrace`
+**Trace (absolute path — do not go looking for it in a project tree):**
+
+```
+/Users/jalance/Projects/mc2/docs/bugs/2026-07-27-metal-capture/apron_095408.gputrace
+```
+
+It is a **262 MB bundle (a directory, not a single file)**, and it is
+**gitignored** — `.gitignore` keeps only `.md` files under `docs/bugs/`, because
+the captures contain retail-derived game pixels. So it exists on this machine's
+disk only: it is not in the repo, not in any Xcode project, and not reachable
+through project-scoped file tools. Open it with **File ▸ Open…** in Xcode (or
+`open <path>` in a terminal), which loads it into the Metal frame debugger.
+
+An older capture of the same scene is at
+`/Users/jalance/Projects/mc2/docs/bugs/2026-07-23-metal-capture/apron.gputrace`
+if the newer one gives trouble.
+
 Drawable: **6016 × 3384** (Retina 2×). The game's own coordinate space
 ("gos space") is **2048 × 1080**; multiply gos → render by ~2.937 in x.
+
+## Expectation-setting on tooling
+
+No MCP tool can introspect a `.gputrace` — Apple's `xcrun mcpbridge` exposes only
+project file ops, build/test, diagnostics, docs search and SwiftUI previews, with
+no Metal/GPU/Instruments surface, and there is no CLI trace reader anywhere in
+Xcode. So the capture has to be driven **by a human in the Xcode UI**. The useful
+division of labour is: jalance clicks (Debug Pixel, Geometry inspector, encoder
+list) and pastes what he sees; you interpret it against the ruled-out list below
+and say what to click next. Don't burn turns trying to read the bundle directly.
 
 ## The bug
 
