@@ -121,6 +121,41 @@ static VkStubTexture* getTexture(DWORD handle)
     return &g_textures[handle - 1];
 }
 
+// Port of the GL path's makeKindaSolid/doesLookLikeAlpha/convertIfNecessary
+// (rendergl/gameos_graphics.cpp:841-880), which the vk backend never got.
+//
+// Some retail TGAs are logically opaque but carry an all-zero alpha channel.
+// The GL path force-opaques those whenever the gos format says Solid; without
+// it, the shader's `c *= tex_color` yields alpha 0 and the draw either blends
+// to nothing (AlphaInvAlpha) or is discarded outright by the alpha test — the
+// primitive rasterizes perfectly and paints no pixels. Upstream's own comment
+// names the exact case: "happens when drawing terrain, see TerrainQuad::draw()
+// case when no detail and no overlay but isCement is true", i.e. the cement
+// pads, which is precisely the vk-only pavement-holes bug.
+static bool looksLikeAlpha(const VkStubTexture& t)
+{
+    for(size_t i = 0; i < t.pixels_.size(); ++i)
+        if((t.pixels_[i] & 0xff000000u) != 0xff000000u)
+            return true;
+    return false;
+}
+
+static void makeKindaSolid(VkStubTexture& t)
+{
+    for(size_t i = 0; i < t.pixels_.size(); ++i)
+        t.pixels_[i] |= 0xff000000u;
+}
+
+// resolve gos_Texture_Detect the same way GL does, then force-opaque if Solid
+static void normalizeAlpha(VkStubTexture& t, bool has_alpha_channel)
+{
+    if(t.format_ == gos_Texture_Detect)
+        t.format_ = (has_alpha_channel && looksLikeAlpha(t)) ? gos_Texture_Alpha
+                                                            : gos_Texture_Solid;
+    if(t.format_ == gos_Texture_Solid && has_alpha_channel)
+        makeKindaSolid(t);
+}
+
 // decode into the stub's 8888 buffer (RGB gets alpha 255)
 static void fillPixels(VkStubTexture& t, const Image& img)
 {
@@ -140,6 +175,7 @@ static void fillPixels(VkStubTexture& t, const Image& img)
             dst[4*i+3] = 0xff;
         }
     }
+    normalizeAlpha(t, img.getFormat() == FORMAT_RGBA8);
 }
 
 ////////////////////////////////////////////////////////////////////////////////

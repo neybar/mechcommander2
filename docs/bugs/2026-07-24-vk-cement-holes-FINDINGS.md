@@ -1,10 +1,69 @@
-# Vulkan cement/pavement "holes" — investigation findings (OPEN)
+# Vulkan cement/pavement "holes" — SOLVED (2026-07-27)
 
-**Status:** open. Root-caused to **MoltenVK/Metal rasterization** (geometry proven
-identical GL vs vk). No fix yet. Branch `fix/vk-black-quad-diag`.
-**Last worked:** 2026-07-27.
+**Status: FIXED.** Root cause was **texture alpha, not rasterization**: some
+retail TGAs are logically opaque but carry an all-zero alpha channel, and the vk
+backend uploaded that alpha verbatim. The cement pads then blended (or
+alpha-tested) away to nothing, letting the backdrop show through as the "holes".
+The GL backend has normalized this since upstream (`makeKindaSolid`); the vk
+backend never got that step. Fix: port `convertIfNecessary`/`makeKindaSolid` to
+`rendervk/gameos_graphics.cpp` (`normalizeAlpha`, called from `fillPixels`).
+Verified by screenshot at building 13 — black band and fog-white square both
+gone, pavement continuous. Branch `fix/vk-black-quad-diag`.
 
-## NEXT SESSION — Metal frame-debugger plan (start here)
+> **The "root-caused to MoltenVK/Metal rasterization" conclusion below was
+> wrong**, and it cost several sessions. It was inferred from *elimination*
+> (identical geometry in, different pixels out) without ever confirming a
+> rasterization mechanism. Everything that conclusion predicted came back clean
+> — both validation layers, the guard-band clip, depth clamp, viewport
+> orientation — because there was never anything wrong at the API or rasterizer
+> level. Lesson for the next hunt: "we ruled out the CPU side, therefore it's
+> the GPU" is not a root cause, and the thing that actually cracked it was
+> reading a **sampled texel's alpha** in the frame debugger, i.e. looking at
+> *data*, not at *state*. The refuted-hypothesis sections are kept below for
+> the record.
+
+## THE ANSWER — texture alpha channel (2026-07-27)
+
+Found in the Xcode Metal frame debugger by following draw 495 down to the texel
+it sampled. Chain of evidence:
+
+1. **Draw 495** (`drawPrimitives:Triangle vertexCount:66` = 22 tris = 11 quads)
+   green-outlines **exactly** the hole regions and nothing else. It is the
+   cement pads — small dedicated pass, not the 400-1500-vertex terrain batches.
+2. Its **vertex data is perfect**: `color = 0.573,0.573,0.573,1.0` (ordinary
+   pavement grey), `texcoord = 0.008…0.992` (proper tile UVs), `FogValue = 1.0`
+   (unfogged), rhw varying sanely 0.00066-0.00139, `gl_Position.z/w = 0.783`.
+3. Its descriptor (offset `0xAF0`, matching `Fragment Buffer 0`) samples
+   **`Texture 0x9ae4e6a80`**. That texture is a **correct cement image** —
+   and its alpha is **zero**: `R≈0.58039 G 0.572549 B≈0.53725 **A 0**`.
+4. The shader does `c = Color.bgra; c *= tex_color;` → `c.a = 1.0 * 0 = 0`.
+   With `alphaMode=3` (AlphaInvAlpha) that is `src·0 + dst·1` = destination
+   untouched; with the alpha-test flag set it is a hard `discard`. **Either way
+   the draw rasterizes perfectly and paints nothing**, which is why every
+   coverage/geometry/rasterizer hypothesis failed to explain it and why depth
+   at a "hole" matched its neighbour (0.6752 vs 0.6753 — same ground plane,
+   written by the pass underneath).
+
+**Why GL was clean:** `rendergl/gameos_graphics.cpp:841` `makeKindaSolid()`
+force-ORs `0xff000000` over every texel whenever the gos format is
+`gos_Texture_Solid`, called via `convertIfNecessary` at texture load. Upstream's
+own comment names our exact bug:
+
+> "have to do this, otherwise texture with zero alpha could be drawn with alpha
+> blend enabled, even though logically alpha blend should not be enabled!
+> (happens when drawing terrain, see TerrainQuad::draw() case when no detail and
+> no overlay but isCement is true)"
+
+alariq hit this on the GL port and fixed it; the vk backend was written without
+it. `fillPixels` already forced alpha for `FORMAT_RGB8` sources (:140) but did a
+straight `memcpy` for `FORMAT_RGBA8`, preserving the zero alpha.
+
+**The fix** (`rendervk/gameos_graphics.cpp`): `looksLikeAlpha` /
+`makeKindaSolid` / `normalizeAlpha`, mirroring the GL trio, called at the end of
+`fillPixels`. It also resolves `gos_Texture_Detect` → Alpha/Solid the same way
+GL does, so `TextureInfo->Type` reports consistently across backends.
+
+## NEXT SESSION — Metal frame-debugger plan (obsolete, kept for the record)
 
 Everything answerable from the CPU/API side is done: **seven** hypotheses
 refuted (the two newest — validation-layer misuse and guard-band clipping — are

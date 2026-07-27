@@ -6,6 +6,51 @@ Newest entries at the top. Practice borrowed from the
 
 ---
 
+## 2026-07-27 — vk cement/pavement holes SOLVED: zero-alpha textures, not the rasterizer
+
+**Symptom.** Vulkan build only: sharp fog-white square holes and a black band in
+pavement/city-block ground near building 13 (Mission 1), sweeping as the camera
+pans. GL clean at the same spot. Open for ~a week across several sessions.
+
+**Cause.** Some retail TGAs are logically opaque but carry an **all-zero alpha
+channel**. `fillPixels` in `rendervk/gameos_graphics.cpp` forced alpha to 255 for
+`FORMAT_RGB8` sources but did a straight `memcpy` for `FORMAT_RGBA8`, so that
+zero alpha reached the GPU intact. The terrain shader computes
+`c = Color.bgra; c *= tex_color;` → `c.a = 1.0 × 0 = 0`, and the cement pads are
+drawn with `AlphaInvAlpha` (and sometimes alpha test), so `src·0 + dst·(1−0)`
+leaves the destination untouched — or the fragment is `discard`ed outright.
+**The draw rasterized perfectly and painted nothing**, and the backdrop showed
+through as "holes".
+
+**Fix.** Port the GL path's `convertIfNecessary`/`makeKindaSolid`/
+`doesLookLikeAlpha` trio (`rendergl/gameos_graphics.cpp:841-880`) to the vk
+backend as `looksLikeAlpha`/`makeKindaSolid`/`normalizeAlpha`, called at the end
+of `fillPixels`. Force-opaque any `gos_Texture_Solid` whose source had an alpha
+channel, and resolve `gos_Texture_Detect` → Alpha/Solid the same way GL does.
+Upstream's comment on `makeKindaSolid` names this exact case — "happens when
+drawing terrain, see TerrainQuad::draw() case when no detail and no overlay but
+isCement is true". alariq hit it on the GL port; our vk backend was written
+without it. Verified: black band and white square both gone, pavement continuous.
+
+**How it was found, and why it took so long.** The Xcode Metal frame debugger,
+driven by hand (its MCP is no help — see the previous entry). Chain: draw 495
+(`vertexCount:66` = 11 quads) green-outlines *exactly* the hole regions → its
+vertex data is perfect (grey `0.573`, proper UVs `0.008…0.992`, unfogged, sane
+rhw) → its descriptor at offset `0xAF0` samples `Texture 0x9ae4e6a80` → that
+texture is a correct cement image reading **`R≈0.580 G 0.573 B≈0.537 A 0`**.
+
+The earlier "root-caused to MoltenVK/Metal rasterization" conclusion was
+**wrong**, and it steered several sessions into dead ends — validation layers,
+guard-band clipping, depth clamp, viewport orientation, ring aliasing. All came
+back clean because nothing was wrong at the API or rasterizer level. That
+conclusion had been reached by *elimination* ("identical geometry in, different
+pixels out") without ever confirming a mechanism. The lesson worth keeping:
+elimination is not a root cause, and what actually cracked it was inspecting a
+**sampled texel's value** — data, not state. Also worth noting the bug was
+sitting in plain sight in the GL source the whole time, with a comment
+describing it; a diff of the two backends' texture-load paths would have found
+it in an hour.
+
 ## 2026-07-27 — vk cement-holes: validation layers clean, guard-band refuted
 
 Two more experiments against the cement holes, both **negative**, plus a
