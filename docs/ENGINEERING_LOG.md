@@ -30,7 +30,13 @@ channel, and resolve `gos_Texture_Detect` → Alpha/Solid the same way GL does.
 Upstream's comment on `makeKindaSolid` names this exact case — "happens when
 drawing terrain, see TerrainQuad::draw() case when no detail and no overlay but
 isCement is true". alariq hit it on the GL port; our vk backend was written
-without it. Verified: black band and white square both gone, pavement continuous.
+without it.
+
+**Verified and closed.** Headless screenshot at building 13: black band and
+fog-white square both gone, pavement continuous. Then a user play-test (jalance)
+— Mission 1 completed, Mission 2 started and panned around, no visible flaws at
+any of the spots he'd been tracking. The repro quicksave is kept at
+`docs/bugs/saves/` in case of regression.
 
 **How it was found, and why it took so long.** The Xcode Metal frame debugger,
 driven by hand (its MCP is no help — see the previous entry). Chain: draw 495

@@ -7,8 +7,18 @@ alpha-tested) away to nothing, letting the backdrop show through as the "holes".
 The GL backend has normalized this since upstream (`makeKindaSolid`); the vk
 backend never got that step. Fix: port `convertIfNecessary`/`makeKindaSolid` to
 `rendervk/gameos_graphics.cpp` (`normalizeAlpha`, called from `fillPixels`).
-Verified by screenshot at building 13 — black band and fog-white square both
-gone, pavement continuous. Branch `fix/vk-black-quad-diag`.
+Branch `fix/vk-black-quad-diag`, fix commit `41f81b3`.
+
+**Verification (2026-07-27):**
+1. Headless screenshot at building 13 — black band and fog-white square both
+   gone, pavement continuous.
+2. **User play-test, jalance:** completed Mission 1, started Mission 2 and
+   panned the camera around. **No visible flaws.** The known bad spots he'd
+   been tracking are all clean. Closed on that basis.
+
+The repro quicksave is preserved at
+`docs/bugs/saves/2026-07-27-building13-pavement-holes.ims` (gitignored; see
+that directory's README) as the comparison point if this ever regresses.
 
 > **The "root-caused to MoltenVK/Metal rasterization" conclusion below was
 > wrong**, and it cost several sessions. It was inferred from *elimination*
