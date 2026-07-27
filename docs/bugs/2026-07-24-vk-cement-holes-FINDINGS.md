@@ -351,6 +351,83 @@ i.e. something is drawing black/fog-colored geometry there, rather than the
 pavement failing to draw. That deserves re-testing against the "no fragment"
 claim in the PROVEN section, which was inferred from depth, not from color.
 
+### Xcode Metal frame-debugger session — DRAW 495 IS THE HOLES (2026-07-27)
+
+**Write this down; it was lost between sessions once already.** Working the
+`apron_095408.gputrace` in Xcode 26.6, driven by jalance with the frame on
+screen. Frame structure: 3 command buffers, **1 render encoder**, 2 blit
+encoders, **343 draw calls**, drawable 6016×3384 BGRA8Unorm, depth
+`0x9ae444c80` Depth32Float full-size.
+
+**Xcode's own frame analysis is useless here.** Insights: Memory = 3 benign
+storage-mode suggestions, Bandwidth = none, Performance = none,
+API Usage = 618 — of which **616 are `Redundant Binding`** on the render
+encoder (MoltenVK re-pushing identical buffer bytes per draw) and 2 are
+"Unused Resource" at present. No load/store-action or correctness warnings at
+all. Don't spend another session hoping the Insights panel will help.
+
+**The find: draw call 495.** Selecting it green-outlines its own primitives,
+and the outline traces **exactly the hole regions** — the notched white polygon
+top-left and the whole black band, boundary for boundary, and nothing else.
+Two draws later the *rest* of the pavement starts tiling in normally.
+So the holes are **not** missing geometry that later draws fail to cover:
+**draw 495 draws those tiles**, in the right place, in the right shape, and
+they come out flat black / flat fog-white instead of textured.
+
+Its state: `RenderPipelineState 0x9ae4db000` (main0/main0),
+`DepthStencilState 0x9aa740d70` = **Depth {LessEqual, Write Yes}**,
+color 0 = CAMetalLayer drawable (load action Clear), vertex buffer
+`0x9ae44da0` as `vertexBuffer.0`, push constants in Buffer 8, fragment
+side has only `spvDescriptorSet0` + `pc` bound directly (textures live in
+Residency Set `0x9ab081800`, so bound-vs-sampled can't be read off the panel).
+
+**Depth-occlusion hypothesis — REFUTED at the readout's resolution.** In the
+Depth attachment, straddling the black band's edge (the R channel of a
+Depth32Float view *is* the depth) gives **0.6752 just outside vs 0.6753 just
+inside** — a tie, not an occluder. The hole fill is therefore **coplanar with
+the surrounding pavement**, which is itself the useful result: it is not a
+stray quad floating in front of the ground, it sits exactly where the ground
+tiles belong. (Caveat: a 4-decimal readout cannot resolve a last-bit LessEqual
+tie-break, so a *precision*-level depth story isn't fully excluded — but the
+gross occlusion story is.) Note this also **contradicts the older 0.99999
+depth reading** recorded in the PROVEN section; trust this measurement, it was
+taken on the final frame state with a known-good pixel as control.
+
+**CPU-side detectors re-run at building 13 (same session):**
+`BADTEX` = **0 hits** — every texture handle resolves, so the
+"unresolvable handle falls back to `SHADER_VERTEX`" path is NOT what's
+happening. `EXTREME-ARGB` = 73 hits but almost all are HUD (`z=0.000`); the
+terrain-sized ones are `tex=106 ''` (`argb=ffffffff frgb=4b000000 fogW=0.294
+count=1056`) and `tex=108 ''` (`argb=ffffffff frgb=ff000000 **fogW=1.000**
+count=417`), plus `tex=107 mc2_02.detail.tga`.
+
+**Fog is NOT inverted** — checked both fragment shaders directly.
+`shaders/gos_tex_vertex.frag` (GL) and `shaders/vk/gos_tex_vertex.frag` both do
+`c.rgb = mix(fog_color.rgb, c.rgb, FogValue)` behind the same
+`if(any fog_color component > 0)` guard, i.e. the D3D convention where
+FogValue=1 means *no* fog. So `fogW=1.000` on tex=108 means unfogged, and the
+white square is not "fully fogged terrain".
+
+**Live hypothesis when this session paused: draw 495 took the untextured
+path.** The call sites choose
+`g_render_states[gos_State_Texture] ? SHADER_TEX_VERTEX : SHADER_VERTEX`, so a
+terrain draw made while `gos_State_Texture == 0` runs `gos_vertex.frag`, which
+never samples a texture and outputs pure interpolated vertex color — flat
+black, flat white, correct tile shapes, correct depth. Crucially **both
+existing detectors are blind to it**: `EXTREME-ARGB` is gated on
+`sh == SHADER_TEX_VERTEX`, and `BADTEX` only fires on an unresolvable handle,
+not on no-handle-at-all. Test: read the generated MSL for
+`RenderPipelineState 0x9ae4db000`'s fragment function — if it contains no
+`tex1.sample(...)`, confirmed, and the bug is upstream in render-state
+management, not in MoltenVK's rasterizer at all.
+
+Checked and dead: GL uses the same sentinel (`INVALID_TEXTURE_ID = 0`,
+`rendergl/gameos_graphics.cpp:30`), so it is not simply that GL treats "no
+texture" as textured. GL does however keep a **two-tier state model** the vk
+path lacks — `renderStates_` (pending) vs `curStates_` (applied), with shader
+selection reading `renderStates_` at :1689/:1705 but `curStates_` at :2064 —
+which is where a GL-vs-vk timing divergence could plausibly live.
+
 ### Remaining candidate directions
 1. Same-run TRACEPX at a screenshot-verified hole pixel (tighten the above).
 2. **GL-vs-vk submitted-vertex diff** (findings' original step 3): dump the terrain
