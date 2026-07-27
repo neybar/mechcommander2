@@ -52,6 +52,19 @@ static char g_last_draw_desc[256]; // MC2_VK_DEBUG: last quad draw of the frame
 static const bool g_vk_debug = getenv("MC2_VK_DEBUG") != NULL;
 const char* g_dbgSrc = "?"; // MC2_VK_TRACEPX: caller tag set by txmmgr per flush loop
 
+// MC2_VK_GUARDCLIP experiment (cement-holes hunt): CPU-clip every triangle to
+// the viewport (plus MC2_VK_GUARDCLIP_MARGIN game px, default 64) before
+// submit. The engine feeds D3D XYZRHW pre-transformed terrain that reaches far
+// off-screen (x ~ -2781..+5203 in a 2048-wide space); Direct3D never
+// frustum-clips those verts, it leans on the rasterizer's guard band. Desktop
+// GL rasterizes them cleanly, MoltenVK/Metal is the suspect for dropping the
+// coverage. With this on, Metal only ever sees on-screen-sized primitives — if
+// the holes vanish, the guard-band hypothesis is confirmed and this is the fix.
+static const bool g_guardclip = getenv("MC2_VK_GUARDCLIP") != NULL;
+static const float g_guardclip_margin =
+        getenv("MC2_VK_GUARDCLIP_MARGIN")
+        ? (float)atof(getenv("MC2_VK_GUARDCLIP_MARGIN")) : 64.0f;
+
 ////////////////////////////////////////////////////////////////////////////////
 // textures
 
@@ -947,6 +960,84 @@ static bool tracepx_inTri(float px, float py,
     return !(neg && pos);
 }
 
+// ---- MC2_VK_GUARDCLIP: CPU viewport clip of XYZRHW triangles ---------------
+// Screen-space Sutherland-Hodgman. x,y,z and rhw are all linear in screen space
+// for pre-transformed verts, so they lerp directly; u,v are NOT — the
+// screen-linear quantities are u*rhw and v*rhw, so those are interpolated and
+// divided back, otherwise every clipped edge skews its texture. Vertex colors
+// are Gouraud (screen-linear in D3D too), so they lerp per byte.
+static inline DWORD gc_lerpColor(DWORD a, DWORD b, float t)
+{
+    DWORD out = 0;
+    for(int s = 0; s < 32; s += 8) {
+        const float ca = (float)((a >> s) & 0xffu);
+        const float cb = (float)((b >> s) & 0xffu);
+        int c = (int)(ca + (cb - ca) * t + 0.5f);
+        if(c < 0) c = 0; else if(c > 255) c = 255;
+        out |= ((DWORD)c) << s;
+    }
+    return out;
+}
+
+static inline gos_VERTEX gc_lerp(const gos_VERTEX& a, const gos_VERTEX& b, float t)
+{
+    gos_VERTEX r;
+    r.x = a.x + (b.x - a.x) * t;
+    r.y = a.y + (b.y - a.y) * t;
+    r.z = a.z + (b.z - a.z) * t;
+    const float rhw = a.rhw + (b.rhw - a.rhw) * t;
+    r.rhw = rhw;
+    const float uw = a.u * a.rhw, vw = a.v * a.rhw;
+    const float uwn = uw + (b.u * b.rhw - uw) * t;
+    const float vwn = vw + (b.v * b.rhw - vw) * t;
+    r.u = (rhw != 0.0f) ? uwn / rhw : a.u;
+    r.v = (rhw != 0.0f) ? vwn / rhw : a.v;
+    r.argb = gc_lerpColor(a.argb, b.argb, t);
+    r.frgb = gc_lerpColor(a.frgb, b.frgb, t);
+    return r;
+}
+
+// clip polygon `in` (n verts) against one axis-aligned half-plane
+static int gc_clipPlane(const gos_VERTEX* in, int n, gos_VERTEX* out,
+                        int axis /*0=x,1=y*/, float lim, bool keepGreater)
+{
+    int m = 0;
+    for(int i = 0; i < n; ++i) {
+        const gos_VERTEX& a = in[i];
+        const gos_VERTEX& b = in[(i + 1) % n];
+        const float da = (axis == 0 ? a.x : a.y) - lim;
+        const float db = (axis == 0 ? b.x : b.y) - lim;
+        const bool ina = keepGreater ? (da >= 0.0f) : (da <= 0.0f);
+        const bool inb = keepGreater ? (db >= 0.0f) : (db <= 0.0f);
+        if(ina)
+            out[m++] = a;
+        if(ina != inb && da != db)
+            out[m++] = gc_lerp(a, b, da / (da - db));
+    }
+    return m;
+}
+
+// Clip one triangle to [minx,maxx]x[miny,maxy]; fan-triangulate the result into
+// `dst`. Returns the number of triangles emitted (0 = fully off-screen).
+static int gc_clipTri(const gos_VERTEX* tri, float minx, float maxx,
+                      float miny, float maxy, std::vector<gos_VERTEX>& dst)
+{
+    // each half-plane can add at most one vertex: 3 -> 7 worst case
+    gos_VERTEX a[16], b[16];
+    int n = 3;
+    a[0] = tri[0]; a[1] = tri[1]; a[2] = tri[2];
+    n = gc_clipPlane(a, n, b, 0, minx, true);  if(n < 3) return 0;
+    n = gc_clipPlane(b, n, a, 0, maxx, false); if(n < 3) return 0;
+    n = gc_clipPlane(a, n, b, 1, miny, true);  if(n < 3) return 0;
+    n = gc_clipPlane(b, n, a, 1, maxy, false); if(n < 3) return 0;
+    for(int i = 1; i + 1 < n; ++i) {
+        dst.push_back(a[0]);
+        dst.push_back(a[i]);
+        dst.push_back(a[i + 1]);
+    }
+    return n - 2;
+}
+
 void emitDraw(ShaderKind sh, TopoKind topo, const gos_VERTEX* vertices, int count,
               const float* foreground /*text only*/)
 {
@@ -1063,6 +1154,49 @@ void emitDraw(ShaderKind sh, TopoKind topo, const gos_VERTEX* vertices, int coun
     if(foreground)
         memcpy(pc.v1, foreground, sizeof(pc.v1));
     pc.flags = g_render_states[gos_State_AlphaTest] ? 1u : 0u;
+
+    // MC2_VK_GUARDCLIP: replace the triangle list with a viewport-clipped one so
+    // no primitive Metal sees extends beyond the screen (+margin).
+    static std::vector<gos_VERTEX> gc_out; // renderer is single-threaded
+    if(g_guardclip && topo == TOPO_TRIS && count >= 3) {
+        const float m = g_guardclip_margin;
+        const float minx = -m, maxx = (float)g_width + m;
+        const float miny = -m, maxy = (float)g_height + m;
+        static uint64_t n_in = 0, n_out = 0, n_dropped = 0, n_split = 0;
+        gc_out.clear();
+        gc_out.reserve((size_t)count * 2);
+        for(int i = 0; i + 2 < count; i += 3) {
+            const gos_VERTEX* t = vertices + i;
+            const bool inside =
+                    t[0].x >= minx && t[0].x <= maxx && t[0].y >= miny && t[0].y <= maxy &&
+                    t[1].x >= minx && t[1].x <= maxx && t[1].y >= miny && t[1].y <= maxy &&
+                    t[2].x >= minx && t[2].x <= maxx && t[2].y >= miny && t[2].y <= maxy;
+            ++n_in;
+            if(inside) {
+                gc_out.push_back(t[0]); gc_out.push_back(t[1]); gc_out.push_back(t[2]);
+                ++n_out;
+            } else {
+                const int emitted = gc_clipTri(t, minx, maxx, miny, maxy, gc_out);
+                if(emitted == 0) ++n_dropped; else { n_out += emitted; ++n_split; }
+            }
+        }
+        if(g_vk_debug) {
+            static time_t last = 0;
+            const time_t now = time(NULL);
+            if(now != last) {
+                last = now;
+                printf("[VKDBG] GUARDCLIP margin=%.0f tris_in=%llu -> out=%llu "
+                       "(clipped=%llu dropped=%llu)\n", m,
+                       (unsigned long long)n_in, (unsigned long long)n_out,
+                       (unsigned long long)n_split, (unsigned long long)n_dropped);
+                fflush(stdout);
+            }
+        }
+        if(gc_out.empty())
+            return;
+        vertices = gc_out.data();
+        count = (int)gc_out.size();
+    }
 
     VkDeviceSize voff = 0;
     uint8_t* dst = ringAlloc((VkDeviceSize)count * sizeof(gos_VERTEX), 4, &voff);

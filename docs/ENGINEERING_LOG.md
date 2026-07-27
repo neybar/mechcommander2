@@ -6,6 +6,51 @@ Newest entries at the top. Practice borrowed from the
 
 ---
 
+## 2026-07-27 — vk cement-holes: validation layers clean, guard-band refuted
+
+Two more experiments against the cement holes, both **negative**, plus a
+correction to the plan that was carried into this session. Detail in
+`docs/bugs/2026-07-24-vk-cement-holes-FINDINGS.md`.
+
+**Validation layers, both APIs — clean.** Ran the headless repro under
+`VK_LAYER_KHRONOS_validation` and then under Metal API validation. Vulkan flagged
+exactly two things, neither raster-related: swapchain binary-semaphore reuse
+(`VUID-vkQueueSubmit-pSignalSemaphores-00067` — a genuine presentation-sync bug
+to fix separately, either per-image semaphores or `VK_KHR_swapchain_maintenance1`)
+and live objects at `vkDestroyDevice`. Metal API validation: zero errors, zero
+warnings, holes still reproduced. Metal *shader/GPU* validation is unusable here
+— it stalls the game before the first frame. Net: the holes are not API misuse
+on either side, they are correct calls producing wrong rasterization.
+
+**Guard-band / large-coordinate rasterization — refuted.** This had been the
+leading hypothesis: D3D `XYZRHW` pre-transformed terrain reaches x ∈ −2781..+5203
+in a 2048-wide space, D3D never frustum-clips those verts, and fixed-point
+rasterizer guard bands are finite. New gated hook `MC2_VK_GUARDCLIP`
+(`rendervk/gameos_graphics.cpp`) does a screen-space Sutherland-Hodgman clip of
+every triangle to the viewport in `emitDraw` — the one choke point all of
+`gos_DrawQuads`/`gos_DrawTriangles`/`gos_RenderIndexedArray` pass through.
+Perspective-correct for XYZRHW: `x,y,z,rhw` lerp directly (screen-linear),
+`u,v` go through `u*rhw`/`v*rhw` and divide back, so clipped edges don't skew.
+It drops **~21% of all triangles as fully off-screen** and clips ~5% more, so
+after it runs nothing Metal sees exceeds screen+64px — and the frame is
+**pixel-identical** to the unclipped run. Refuted in both directions.
+
+Worth carrying forward: cropping the black band shows it bounded by a **clean
+straight diagonal edge**, with buildings and crates drawing correctly on top.
+A straight edge means rasterized primitive coverage, not absent geometry — so
+"something draws black there" now looks more likely than "pavement fails to
+draw", which the earlier depth-based "no fragment" inference had implied.
+
+Also corrected a planning assumption: **Apple's Xcode MCP (`xcrun mcpbridge`)
+cannot help with this class of bug.** Its ~21-24 tools are file ops, build/test,
+diagnostics, docs search and SwiftUI previews — no Metal, GPU-capture or
+Instruments tools — and it bridges into a running Xcode with an open project,
+which a CMake tree doesn't have. Nor is there any headless `.gputrace` reader
+(`xctrace` is Instruments/timing; `GPUTools*.framework` is private and GUI-only).
+Reading a capture stays a human-in-Xcode step. Local gotcha: Xcode lives on
+`/Volumes/Media` here and `xcode-select` points at the CLT instance, so `xcrun`
+finds no Xcode tools until it's repointed.
+
 ## 2026-07-27 — vk cement-holes: experiments + the D3D→GL→VK clipping research
 
 Used the new `tools/vkprobe` harness to run four gated experiments against the

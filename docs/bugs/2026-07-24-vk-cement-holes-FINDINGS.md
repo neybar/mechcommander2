@@ -6,21 +6,33 @@ identical GL vs vk). No fix yet. Branch `fix/vk-black-quad-diag`.
 
 ## NEXT SESSION — Metal frame-debugger plan (start here)
 
-Everything answerable from the CPU/API side is done: five hypotheses refuted, and
-the GL-vs-vk vertex diff proved the submitted geometry + projection + shader are
-identical, so the holes are **purely MoltenVK/Metal rasterization** of that
-geometry. The only tool left that can see *why* Metal drops the coverage is the
-**Xcode Metal frame debugger** (jalance is wiring an Xcode MCP; a `.gputrace` is
-Apple-proprietary and only introspectable inside Xcode, so expect to drive the
-Xcode UI, not parse the trace).
+Everything answerable from the CPU/API side is done: **seven** hypotheses
+refuted (the two newest — validation-layer misuse and guard-band clipping — are
+written up below, 2026-07-27), and the GL-vs-vk vertex diff proved the submitted
+geometry + projection + shader are identical. So the holes are **purely
+MoltenVK/Metal rasterization** of that geometry, with both validation layers
+confirming the API stream itself is spec-clean. The only tool left that can see
+*why* is the **Xcode Metal frame debugger**, driven by hand in the Xcode UI.
 
-Leading hypothesis to confirm/refute: **guard-band / large-coordinate
-rasterization.** The D3D `XYZRHW` terrain submits screen-space triangles reaching
-x ∈ −2781..+5203 (2048-wide space) → clip coords far outside ±w
-(`gl_Position.x≈8160` vs `w≈2000`). Rasterizers use fixed-point edge math with a
-finite guard band (~±32768 px, 8-bit subpixel); beyond it → overflow / wrong
-coverage (fgiesen pt.5). Both backends submit these; desktop GL rasterizes them,
-Metal is suspected to drop them.
+**Correction (2026-07-27) — the Xcode MCP does not help here.** Apple's
+`xcrun mcpbridge` (Xcode 26.6) exposes ~21-24 tools, all project-authoring:
+`XcodeRead/Write/Grep/Glob/MV/RM`, `BuildProject`, `GetBuildLog`,
+`RunAllTests`/`RunSomeTests`, `XcodeListNavigatorIssues`, `RenderPreview`,
+`ExecuteSnippet`, `DocumentationSearch`. **No Metal / GPU-capture /
+frame-debugger / Instruments tools at all**, and it bridges by XPC into a
+running Xcode with an *open project* — mc2 is CMake, there is no `.xcodeproj`.
+There is also no headless `.gputrace` reader anywhere in Xcode (`xctrace` is
+Instruments/timing only; the `GPUTools*.framework`s are private and GUI-bound).
+Reading a capture is a human-in-Xcode step, full stop. Note also this machine
+keeps Xcode at `/Volumes/Media/Applications/Xcode.app` and `xcode-select` points
+at the CLT instance, so `xcrun` can't find Xcode tools until you run
+`sudo xcode-select -s /Volumes/Media/Applications/Xcode.app/Contents/Developer`.
+
+Leading hypothesis was **guard-band / large-coordinate rasterization** — the
+D3D `XYZRHW` terrain submits screen-space triangles reaching x ∈ −2781..+5203
+(2048-wide space), and rasterizers use fixed-point edge math with a finite guard
+band. **REFUTED 2026-07-27** by `MC2_VK_GUARDCLIP`; see the section below. Go
+into the frame debugger without a favoured hypothesis.
 
 Steps:
 1. Capture a `.gputrace` at a hole — use `tools/vkprobe/run.sh --save 1
@@ -274,6 +286,71 @@ them cleanly, MoltenVK does not → consistent with the XYZRHW/guard-band resear
 thread, though the specific failing cement triangle at the apron was modest-sized,
 so the exact Metal-level mechanism still needs the Metal debugger to see directly.
 
+### Validation layers, both APIs — CLEAN (2026-07-27)
+
+Ran the full headless repro under each validation layer in turn
+(`tools/vkprobe/run.sh --save 1`). Both are **clean negatives on the raster
+question**, which is itself load-bearing: the holes are not API misuse, they are
+*correct API calls producing wrong rasterization*.
+
+- **Vulkan (`VK_LAYER_KHRONOS_validation`, SDK 1.4.350.1)** — whole session, only
+  two findings, neither raster-related: `VUID-vkQueueSubmit-pSignalSemaphores-00067`
+  (swapchain binary semaphore reused before re-acquire — a real presentation-sync
+  bug worth fixing separately, see the swapchain-semaphore-reuse guide; fix is
+  per-swapchain-image semaphores or `VK_KHR_swapchain_maintenance1`) and
+  `VUID-vkDestroyDevice-device-05137` (objects still alive at teardown).
+  **Zero draw / pipeline / state errors.**
+- **Metal API validation** (`MTL_DEBUG_LAYER=1`, error+warning mode `nslog`) —
+  game ran normally to a clean quit, holes reproduced, **zero errors or
+  warnings**.
+- **Metal GPU/shader validation** (`MTL_SHADER_VALIDATION=1`) — **inconclusive**:
+  it stalls the game hard (banners print, then no frame in 60s). Not retried.
+
+Gotcha for next time: the game's stdout is block-buffered into the harness log,
+so a run that gets killed before 4 KB accumulates loses all of it. Use
+`--capture screenshot` (which lets the run quit cleanly) rather than
+`--capture log` when the session might be slow; stderr/NSLog is unbuffered and
+survives either way.
+
+### Guard-band / large-coordinate rasterization — REFUTED (2026-07-27)
+
+This was the leading hypothesis (see the external-research section above), and
+it is now dead. `MC2_VK_GUARDCLIP` (+ `MC2_VK_GUARDCLIP_MARGIN`, default 64
+game px) added to `rendervk/gameos_graphics.cpp`: a screen-space
+Sutherland-Hodgman clip of **every** triangle to the viewport rect, applied in
+`emitDraw` — the single choke point all of `gos_DrawQuads`,
+`gos_DrawTriangles` and `gos_RenderIndexedArray` funnel through. Perspective-
+correct for XYZRHW verts: `x,y,z,rhw` are screen-linear and lerp directly,
+`u,v` are interpolated as `u*rhw`/`v*rhw` and divided back (textures come out
+unskewed, confirming the clip is sound and not accidentally a no-op).
+
+It is demonstrably doing work — steady-state counters at building 13:
+
+```
+[VKDBG] GUARDCLIP margin=64 tris_in=15919764 -> out=13071386 (clipped=823038 dropped=3303964)
+```
+
+**~21% of all submitted triangles are entirely off-screen** and ~5% straddle the
+edge. After the clip *no primitive Metal sees extends beyond screen+64px* — and
+the screenshot is **pixel-for-pixel identical** to the unclipped run, including
+the sharp diagonal edge of the black band (compared by cropping the band and the
+fog-white square from both runs).
+
+That refutes it in both directions: if Metal were dropping the huge triangles,
+their clipped remnants would now cover the holes; if the huge triangles were
+mis-rasterizing *into* the holes, they no longer exist. Neither happened.
+So screen-space coordinate magnitude is not the mechanism, which also fits the
+arithmetic — peak |x| ≈ 5203 in gos space ≈ 15300 px on the 6016-wide drawable,
+comfortably inside a conventional ±32768 s15.8 guard band.
+
+**Observation worth carrying forward:** in the band crop, the black region is
+bounded by a **clean straight diagonal edge** and correctly-lit objects
+(buildings, crates, the compass rose) draw normally on top of it. A straight
+edge means the black is *rasterized primitive coverage*, not absent terrain —
+i.e. something is drawing black/fog-colored geometry there, rather than the
+pavement failing to draw. That deserves re-testing against the "no fragment"
+claim in the PROVEN section, which was inferred from depth, not from color.
+
 ### Remaining candidate directions
 1. Same-run TRACEPX at a screenshot-verified hole pixel (tighten the above).
 2. **GL-vs-vk submitted-vertex diff** (findings' original step 3): dump the terrain
@@ -319,6 +396,14 @@ vk cement path. Unresolved candidates:
   2026-07-24, `rendervk/gameos_graphics.cpp:2035`) — logs any `gos_RenderIndexedArray`
   whose vertex bbox covers (x,y) or is degenerate.
 - **Fog bake dump:** `MC2_FOG_DEBUG=1`.
+- **CPU viewport clip:** `MC2_VK_GUARDCLIP=1` (+ `MC2_VK_GUARDCLIP_MARGIN=<px>`,
+  default 64); with `MC2_VK_DEBUG=1` it prints per-second clip counters.
+- **Validation layers:** Vulkan —
+  `VK_LAYER_PATH=$VULKAN_SDK/share/vulkan/explicit_layer.d
+  VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation VK_LOADER_LAYERS_ENABLE='*validation'`;
+  Metal API — `MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=nslog
+  MTL_DEBUG_LAYER_WARNING_MODE=nslog`. Do **not** add `MTL_SHADER_VALIDATION=1`,
+  it hangs the game.
 - **Repro:** save `~/.mechcommander2/savegame/testgame.ims` is at building 13
   (Mission 1). Warp: launch `./mc2-vk -mission mc2_02`, wait ~20s, make frontmost,
   `tools/devinput/sendkeys load` ×2 (8s apart), settle ~20s. Scripts in the
