@@ -205,6 +205,349 @@ extension, so device creation is byte-identical to before.
 Verified end to end: a 5s smoke capture wrote a 256 MB trace containing the
 CAMetalLayer, heaps and textures. Reading the black-quad trace in Xcode is the
 next step and is at-keyboard work.
+## 2026-07-20 — Building glass flips see-through ↔ dark with camera pan (original-MS transparency-sort wart, both backends — provenance CONFIRMED via shared-source diff; fix attempted 2026-07-21 & REVERTED, needs depth sorting)
+
+**Symptom:** on `mc2-vk` (Mission 1), a building's glazing flips appearance
+with nothing but a small camera move — no unit or state change. Captured
+live as a screenshot pair around a slight pan/zoom: the control-tower cab
+on a low building rendered its angled roof glass **fully see-through** in
+one frame (pavement clearly visible *through* the panels, as if there were
+no glass) and **opaque dark filled glass** in the next. Same static
+building, same panels both frames. Evidence: `docs/bugs/2026-07-20-task4/mc2_glass_transparent.png`
+/ `mc2_glass_filled.png` (cab crops `zoom_glass_transparent.png` /
+`zoom_glass_filled.png`).
+
+**Which state is the bug: the see-through one.** Traced the glass path.
+Building windows are submitted **untextured** — `TG_Shape::Render` sends
+window faces via `addVertices(0xffffffff, gVertex, MC2_DRAWALPHA)`
+(`tgl.cpp:2671`), a sentinel handle, not a real texture; their colour comes
+entirely from per-vertex lighting. Window verts carry the magic value
+`0xffff00ff` ("hot pink"), which the lighting pass *replaces*: at night →
+lit-window colour, and **in daytime → dark grey `0x2f2f2f`**
+(`tgl.cpp:1763-1768`). So the **dark filled glass is the correct daytime
+look**; the see-through frame is the anomaly (the dark-grey alpha surface
+failing to cover).
+
+**Correction to the earlier draft of this entry — glass does NOT constrain
+the mech blue↔red flip; they are different paths.** The glass is untextured
+(above), so there is no texture to mis-bind — which *rules out* the
+descriptor/texture-binding family for the glass, but also means it says
+nothing about the mech. Mech team colour is a **per-instance recoloured
+texture**: `Mech3DAppearance::setPaintScheme` (`mech3d.cpp:1619`) reads base
+texture pixels (`baseColor = *textureMemory`) and rewrites their RGB per the
+paint scheme. So the mech flip is texture-based (binding/descriptor class),
+the glass flip is untextured-alpha compositing — treat them as **separate
+bugs**. (Retracts the prior "rules out team-color selection logic" claim,
+which wrongly assumed a shared cause.)
+
+**Root cause found — it's a documented pre-existing engine bug, not vk.**
+The window pass carries an upstream FIXME describing this exact symptom
+(`txmmgr.cpp:1412-1414`):
+
+> *because some objects are drawn with alpha blend + depth write rather than
+> alpha test, if order is wrong then objects which are behind may not be
+> visible: e.g. hangar in first mission - under some angles "window" mesh is
+> drawn after hangar shell and it is failing depth test*
+
+The window (untextured, `MC2_DRAWALPHA`) is drawn in the alpha pass with
+**`ZWrite = 1`** and **`ZCompare = 1` (LEQUAL)** (`txmmgr.cpp:1404-1408`),
+in reverse node order (`i = nextAvailableVertexNode-1 … --`,
+`txmmgr.cpp:1418`). The building **shell** is drawn solid first and writes
+depth; then at some camera angles the window mesh — coplanar/just inside the
+shell — **fails the depth test and is skipped**, so nothing covers those
+pixels and the ground shows through ("see-through" frame). At other angles
+it passes and composites the dark-grey glass ("filled" frame). The FIXME
+even names *"hangar in first mission"* — the building in our shots.
+
+**This is shared, backend-agnostic code** (draw order + depth state live in
+`txmmgr.cpp`, identical on GL and vk), so it is **not a vk-parity bug** — the
+user confirmed it reproduces on GL too. "Both backends" is **not** on its own
+proof of "original 2001 game" (shared code includes the port layer), so we
+settled provenance by **diffing the pristine Microsoft 2006 shared-source**
+`txmmgr.cpp` (`SimonDarksideJ/MechCommander2-Source`, `Source/MCLib/`).
+
+**PROVENANCE CONFIRMED — the root cause is original Microsoft code, not the
+port.** The original's `MC_TextureManager::renderLists` window/alpha pass
+sets **`ZCompare = 1` (LEQUAL) and `ZWrite = 1` (depth-write ON)**
+(`ms_txmmgr.cpp:796,800`) and then draws the non-terrain / non-shadow /
+non-compass / non-crater `MC2_DRAWALPHA` nodes — i.e. windows — in that
+depth-writing alpha pass (`ms_txmmgr.cpp:803-810`). That is **identical** to
+ours (`txmmgr.cpp:1404-1408`): the "alpha-blend + depth-write ⇒
+order-dependent depth-test failure" design is Microsoft's. So the original
+2001 game had the *same* latent window-vs-shell depth fragility. The user's
+doubt was reasonable but the diff resolves it: **original-engine wart.**
+
+**What the port changed here is *mitigation*, not cause.** Original is
+**single-pass, forward** iteration (`for i=0 … ++`). sebi added a two-pass
+alpha-test split (2018) and flipped the loop to **reverse** order (2026,
+`txmmgr.cpp:1418`) — a crude back-to-front attempt — with the FIXME
+conceding it still isn't fixed. Net: the port has been trying (imperfectly)
+to paper over an original MS bug. One consequence worth noting: because the
+port reordered the alpha draws, the *exact* camera angles that show the
+see-through may not match the 2001 original frame-for-frame, even though the
+underlying wart is the same.
+
+**Classification: original-engine bug → "warts and all".** Same bucket as
+task 18. Distinct from the black-quad finding below (opaque, camera-invariant,
+core-terrain) and the mech flip (textured, `setPaintScheme`).
+
+**FIX ATTEMPTED 2026-07-21, then REVERTED — leave it as the wart. Three
+approaches tried, all dead ends; recorded so nobody re-runs them:**
+
+1. **`ZWrite = 0` on the whole alpha-blend sub-pass** (blended geometry tests
+   depth but doesn't write it). *Mostly* fixed the flip — but because nothing
+   in the pass then writes depth, hidden panes of a glass-box building stopped
+   being occluded and **poked out past the silhouette** ("glass outside the
+   building"). Traded the flip for transparency overdraw.
+2. **Fixed per-vertex z-bias on windows** (nudge `gVertex.z` toward the camera
+   in the `isWindow` submit). Can't work: NDC depth is **non-linear**, so one
+   constant is too strong on near buildings (glass floats in front) and too
+   weak on far ones (still flips) — confirmed live, three buildings in one
+   view showing all three states at once.
+3. **Hardware polygon offset** on the blend sub-pass (new `gos_State_ZBias`,
+   `glPolygonOffset` on GL + `depthBias` in the vk pipeline). **Zero effect
+   even at a huge `-32` constant / `-8` slope.** That is the tell: a depth
+   problem could not survive that. Culling is already off for this pass
+   (`gos_Cull_None`, `txmmgr.cpp:1045`), so it's not facing either.
+
+**Real diagnosis:** the flip is **transparent-vs-transparent**, not
+glass-vs-wall. Blended glass panes depth-**write** and reject *each other*;
+which pane wins depends on draw order, which shifts with camera angle.
+Uniform depth bias moves them all together so it changes nothing (why #3 did
+nothing); `ZWrite=0` stops the mutual rejection but then nothing is hidden
+(why #1 overdrew). The only correct fix is **back-to-front depth sorting of
+the transparent triangles**, which this engine never had — it batches by
+*texture node*, not depth. That's a real renderer feature (its own project),
+out of proportion to a cosmetic original wart, so we're leaving it. If
+someone builds transparency sorting later, this is the payoff case. All fix
+code reverted; engine tree matches the original.
+
+---
+
+## 2026-07-20 — UPDATE: black quad is NOT an object/mech shadow and is not gated by any graphics option (task 4)
+
+**Live toggle test (user-driven, vk, Mission 1) narrows the black quad
+substantially — read the two entries below for the prior investigation,
+then this.** Toggling the in-game **Shadows** and **Local Shadows** options
+removed the mech/unit shadows as expected but left the recurring black quad
+**unchanged**. That is a clean negative result: the black quad is **not**
+drawn by the object-shadow path (`useShadows` → `TG_Shape::MultiTransformShadows`
+/ `bldgShadowShape`, the `argb = 0x3f000000` quads at `tgl.cpp:3274`) — the
+subsystem both entries below assume it belongs to. The remaining graphics
+toggles (**Detail Textures**, **High Object Detail**, **Non-Weapon
+Effects**) also had **no effect** on it.
+
+**Independently, static analysis had already shown the object-shadow blend
+path can't produce opaque black:** under the shadow draw's `AlphaInvAlpha`
+blend, source alpha is `vertexA(0x3f→0.247) × texA ≤ 0.247`, so a single
+shadow draw can at most darken the surface ~25% — it is mathematically
+incapable of solid black. Verified end-to-end that the vk blend state,
+pipeline blend attachment, vertex `argb` unpack (offset 16, `R8G8B8A8_UNORM`,
+`.bgra` swizzle), fragment math (`c = Color.bgra; c *= tex_color`), and
+depth compare/write all match GL exactly. So the "shadow rendering fully
+opaque / blend-state bug" conclusion in the entries below is **wrong** — not
+the mechanism, and now not even the right subsystem.
+
+**Where that leaves it:** the quad is opaque, sharp-edged, world-anchored,
+flat on pavement/roofs, survives every graphics toggle, and does **not**
+flip with the camera. That profile says **core terrain/building
+rendering** — a surface whose texture fails to bind (rendering black) on vk,
+or a terrain/decal lighting value (`crater.cpp` colors decals with
+`argb = lightRGB`, `crater.cpp:452`) resolving to black. Also unresolved:
+the vk-parity framing still rests on a single "GL-clean" screenshot at this
+spot — a same-spot GL capture is needed to confirm it's a vk divergence at
+all and not original-engine. Next step is `MC2_VK_DEBUG=1` last-draw logging
+at the repro to name the actual draw call. **OPUS** once the draw is
+identified.
+
+---
+
+## 2026-07-20 — UPDATE: black quad may be a missing/failed draw, not a blend-alpha bug — see turret-pit sighting
+
+**This revises the "building shadows render fully opaque" entry below —
+read that one first, then this.** Same recurring black quad (same
+hangar-13/wall location tracked through this whole session), new vantage:
+screenshot `docs/bugs/2026-07-20-task4/mc2_turret_xray.png` (crop `docs/bugs/2026-07-20-task4/zoom_turret.png`) shows the black
+area sitting directly over a closed SRM turret emplacement — and *inside*
+the black region, the turret's retracted rocket-tube cluster and mast are
+clearly visible, fully rendered, not just implied. The user's read is
+exactly right: that mechanism should be hidden/occluded when the turret is
+retracted (per game design, it only rises when an enemy approaches), and it
+shouldn't be visible right now.
+
+That's a different signature than "shadow rendering too opaque." Seeing
+occluded geometry through the black area is more consistent with **some
+covering surface failing to draw at all** on vk (a ground patch or turret
+"lid" that should render over the pit) than with an alpha-blend bug on a
+shadow quad. Where earlier sightings showed nothing underneath (the hangar
+pad, the tower roof), that read as "solid black shadow" — but there may
+have been a pit/void there too, just with nothing behind it worth seeing,
+so the two explanations were indistinguishable until this vantage.
+
+**Net effect: the earlier entry's root-cause conclusion (blend-state bug on
+`MC2_ISSHADOWS` shadow draws) should be treated as unconfirmed again, not
+settled.** Both explanations point at the vk backend failing to draw
+something it should — either the shadow quad's blend state, or a separate
+cover/floor draw — but which one (or whether it's the same draw call at
+all) isn't established. Whoever picks this up next should look at what's
+*supposed* to render over a closed turret pit before assuming the shadow
+codepath is the culprit.
+
+---
+
+## 2026-07-20 — Downed mech flips team-color skin (blue ↔ red) between frames on vk (task 4, open — likely descriptor-cache collision)
+
+**Symptom:** a downed/kneeling mech, same pose and geometry, rendered deep
+blue with a cyan chest panel in one screenshot (`docs/bugs/2026-07-20-task4/mc2_downed_mech_1.png`,
+crop `docs/bugs/2026-07-20-task4/zoom_downed_1.png`) and red with a yellow chest panel in a second
+screenshot (`docs/bugs/2026-07-20-task4/mc2_downed_mech_2.png`, crop `docs/bugs/2026-07-20-task4/zoom_downed_2.png`) taken
+moments later, on `mc2-vk`, with only a small camera pan between the two —
+no unit changed, nothing respawned, same mech in the same lance formation
+both times.
+
+**This looks like the same bug class as the 2026-07-17 fix**
+(descriptor-cache-key collision — see that entry above), not a new
+mechanism: stable-looking but *wrong* texture content bound to a draw,
+flipping with camera/render state rather than crashing or showing garbage.
+That fix keyed the vk descriptor cache on the exact binding tuple (sampler,
+3 views, 2 UBOs) instead of a folded hash to close exactly this kind of
+collision — this finding means either a case that fix didn't cover, or a
+different cache/lookup with the same lossy-key mistake, applied to mech
+skin/team-color textures instead of GUI textures. Not yet confirmed which.
+
+**Not investigated yet, but higher-confidence than the other two task-4
+findings above** given the direct match to a previously root-caused bug.
+Next step: reproduce with `MC2_VK_DEBUG=1` (set at launch) and check
+whether the same last-draw diagnostic logging from the 2026-07-17 fix
+covers mech/skin texture binds, or needs extending to them. Worth an
+**OPUS** look first (targeted, matches an existing fixed pattern) before
+considering **FABLE**, per the credit plan's task 4 escalation guidance for
+"anything that looks like today's descriptor-collision class."
+
+---
+
+## 2026-07-20 — Destroyed LRM truck wreck shows a black/white checkerboard texture on vk (task 4, open)
+
+**Symptom:** during the same task-4 playtesting session (Mission 1), the
+wreck of a destroyed LRM truck (confirmed by the user) rendered with a hard
+black-and-white checkerboard pattern covering the *entire* model, on
+`mc2-vk`. First spotted while investigating the wall-shadow finding above
+(screenshot `docs/bugs/2026-07-20-task4/mc2_shadow_wall.png`); a closer follow-up shot isolates just
+the wreck — `docs/bugs/2026-07-20-task4/mc2_lrm_wreck.png` (crop `docs/bugs/2026-07-20-task4/zoom_lrm3.png`). At close range it's
+clearly a full-model checkerboard, not scorch/damage art — ruling out the
+"maybe it's an intentional damage decal" alternative raised in the first
+sighting. Nearby soft-edged dot-pattern scorch decal (visible in the same
+shots) still looks like normal game art, unrelated.
+
+**Not investigated yet.** Visually this looks more like a wrong/missing
+texture than a blend-state problem (sharp checkerboard, not a solid-color
+overlay) — plausibly the same general class as the descriptor-cache-key
+collision fixed 2026-07-17 (texture content swapped/wrong for a draw), but
+that's a guess from screenshots, not confirmed. Not yet checked against GL
+at the same spot. Logged as a separate task-4 finding — do not conflate
+with the wall/building shadow-blend bug above, they look like different
+bug classes.
+
+---
+
+## 2026-07-20 — Building shadows render fully opaque instead of alpha-blended on vk (task 4, open)
+
+**Superseded/revised by the entry above ("UPDATE: black quad may be a
+missing/failed draw") — a later sighting of the same quad over a turret pit
+showed occluded geometry through it, which doesn't fit "shadow rendering
+too opaque." Read this entry for the original investigation, but don't
+treat its root-cause conclusion as settled.**
+
+**Symptom:** during task-4 parity playtesting (Mission 1), a sharp-edged
+rectangular quad appeared flat on the ground/rooftops near buildings on the
+`mc2-vk` build — split between solid black and a normally-lit light-colored
+surface (a parking pad, a building roof), reproduced on 2 separate vk runs
+(one showing two instances in a single frame, near hangar 13 and near a
+second building/tower cluster), absent on one GL run at the same spot.
+Screenshots: `docs/bugs/2026-07-20-task4/mc2_shadow_artifact.png`, `docs/bugs/2026-07-20-task4/mc2_shadow_vk2.png`.
+
+**Root cause, confirmed by pixel measurement:** initial live impression
+(mine and the user's, from watching the view pan) was that the black region
+stayed fixed relative to the *camera* rather than the world — suggesting a
+camera-space-vs-world-space bug in shadow direction math. Tested directly:
+captured a before/after screenshot pair around a pure camera pan (no unit
+movement, mechs off-screen) — `docs/bugs/2026-07-20-task4/mc2_pan_before.png` / `docs/bugs/2026-07-20-task4/mc2_pan_after.png`.
+Template-matched a static landmark *on the same building* the shadow was
+attached to and measured its on-screen shift precisely: **(+600, +0) px**
+at full resolution (6016x3384). Sampled four points inside the black shape
+in the "before" frame and checked those exact points offset by that same
+(+600, +0) in the "after" frame — all landed on matching near-black values
+(e.g. `(1,5,9)`→`(1,5,9)`, `(4,7,11)`→`(1,5,9)`, `(37,42,45)`→`(41,46,49)`).
+
+**Conclusion: the shadow is world-anchored, not camera-anchored** — it
+moves in lockstep with the building it belongs to. The camera-relative
+impression was parallax: a separately-measured flat-ground landmark (a
+guardrail, at a different depth) shifted only (+284, +184) over the *same*
+pan, so different objects visibly move different amounts on screen under a
+panning perspective camera — normal 3D behavior, easily misread as "this
+one thing is following the camera" if compared against the wrong reference.
+The mech-shadow-swing entry below (heading-relative rotation) is a
+**separate, unrelated bug** — this one is not a rotation/direction problem.
+
+The actual bug: the game's shadow quads are drawn at a fixed
+`argb = 0x3f000000` (~25% opaque black — see `tgl.cpp:3274` etc., found
+during the mech-shadow investigation below), i.e. they're *meant* to
+lightly darken whatever they're drawn over, not render solid black. What's
+rendering here is close to fully opaque (`(0,0,0)`–`(4,7,11)`, not a 25%
+blend toward the surface color). That's a blend-state bug on the shadow
+draw path — plausibly vk-specific (matches task 4's "OPUS for blend/state
+fixes" bucket directly), though only confirmed absent on a single GL data
+point so far.
+
+**Not fixed.** Next step is an vk-side look at how `MC2_ISSHADOWS`-flagged
+draws (`tgl.cpp:3328`, `mcTextureManager->addVertices(...)`) set up
+blending in the vk backend vs. GL — likely alpha blending isn't enabled, or
+the alpha channel of `argb` isn't reaching the blend stage. `MC2_VK_DEBUG=1`
+(set at launch, can't toggle mid-session) would help confirm which draw
+call is responsible. Logged as credit-plan task 4 finding — root cause
+narrowed via intake-level investigation, but the actual blend-state fix is
+still **OPUS** work per the credit plan.
+
+---
+
+## 2026-07-20 — Mech shadows swing wildly with small heading changes (investigated, not fixed)
+
+**Symptom:** playtesting Training 1, unit shadows appear to swing/rescale
+dramatically with the smallest mech movement — as if the "sun" were a point
+light only a few feet away rather than a fixed distant directional light.
+Reproduces on **both** GL and VK backends, so it's not a task-4 VK-parity
+issue; it's either an original-engine bug or a latent one exposed by this
+port. Not yet confirmed against the retail game (no side-by-side available).
+
+**Root-cause hypothesis (not yet verified by a fix/test cycle):**
+`TG_Shape::MultiTransformShadows` (`mclib/tgl.cpp:2850`) computes each mech's
+shadow by projecting its local-space vertices onto the ground plane along the
+directional ("infinite") sun light. It first transforms the vertex to true
+world space via the shape's full `shapeToWorld` matrix (which already bakes
+in the mech's current yaw — built from `shapeOrigin.BuildRotation(*rot)` in
+`TG_MultiShape::TransformMultiShape`, `mclib/msl.cpp:1299`), then *also*
+rotates the world-space sun direction itself by that same yaw
+(`RotateLight(s_lightDir, rotation)` at `tgl.cpp:2910`, where `rotation` is
+the global `yawRotation` set from the mech's Euler yaw). That looks like a
+double application of the mech's orientation: the light direction ends up
+coupled to the mech's own heading, so as the mech turns even slightly, the
+effective sun angle used for its shadow swings with it — producing exactly
+the "light is right next to me" look reported, rather than a fixed world
+sun direction shared by every object.
+
+Confirmed via `git blame` that this exact call (`RotateLight(lightDir,
+rotation)`, since renamed to `s_lightDir`) predates the alariq OpenGL port —
+it's in the original Microsoft shared-source commit (`63e58e9`), not
+something introduced by the port. So if this is a real bug, it's an
+original-engine one we'd be choosing to fix, not a porting regression.
+
+**Not fixed.** This needs an OPUS pass: confirm the hypothesis (e.g. log the
+effective light direction per mech per frame and correlate with heading),
+decide whether `RotateLight(s_lightDir, rotation)` should be removed/changed
+without breaking the (single-shape, non-multi) `TG_LIGHT_TERRAIN` case at
+`tgl.cpp:2027`, which does a related-looking but different rotation (rotates
+the *vertex* into world orientation rather than rotating the *light*, and
+isn't part of the shadow path). Logged as credit-plan task 18.
 
 ---
 

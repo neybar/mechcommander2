@@ -39,7 +39,75 @@ that discipline is what makes model switches cheap.
    missions on vk (free!); for anything off, GL-vs-vk screenshot pairs +
    MC2_VK_DEBUG log land in a bug note. — user + **SONNET** intake;
    **OPUS** for blend/state fixes; **FABLE** for anything that looks
-   like today's descriptor-collision class. **Not started.**
+   like today's descriptor-collision class. **In progress**: first finding
+   logged 2026-07-20 (Mission 1) — a recurring black quad on vk (parking
+   pad, tower roof, wall, all same general area), reproduced 2/2 on vk,
+   absent on 1 GL run. Initial pixel-measurement work ruled out a
+   camera/rotation-relative cause (confirmed world-anchored) and pointed at
+   a blend-state bug (`MC2_ISSHADOWS` shadow draws rendering fully opaque
+   instead of ~25%-alpha, `tgl.cpp:3328`) — **but a later sighting over a
+   closed SRM turret pit showed the turret's retracted mechanism visible
+   *through* the black area**, which fits "something failing to draw/cover
+   the spot" better than "shadow rendered too opaque." Root cause is open
+   again — see ENGINEERING_LOG's "UPDATE" entry before assuming the
+   blend-state theory. `MC2_VK_DEBUG=1` on the next repro would help pin
+   down the actual draw call responsible. **OPUS** territory either way.
+   **Second finding**, same session: a destroyed
+   LRM truck wreck showed a black/white checkerboard texture on vk —
+   looks like a different bug class (wrong/missing texture content, not
+   blend state), not yet investigated. See ENGINEERING_LOG. **Third
+   finding, higher priority:** a downed mech's team-color skin flipped
+   blue→red between two screenshots taken moments apart (same mech, small
+   camera pan, no respawn) — a direct match to the 2026-07-17
+   descriptor-cache-collision bug's signature (stable wrong content,
+   flips with render/camera state). Either that fix has a gap or a
+   related cache has the same lossy-key mistake. Start here — **OPUS**
+   first since it matches an already-solved pattern, escalate to
+   **FABLE** only if it doesn't.
+   **UPDATE 2026-07-20 (live toggle + static pass):** the black quad is
+   **not** an object/mech shadow — toggling in-game Shadows/Local Shadows
+   removed mech shadows but not the quad, and no graphics option (Detail
+   Textures, High Object Detail, Non-Weapon Effects) touches it, so it's
+   **core terrain/building rendering**, not the `MC2_ISSHADOWS` path the
+   first finding assumed. Static analysis separately proved the shadow
+   blend path can't make opaque black (alpha caps at ~25%; vk blend/vertex/
+   shader/depth all match GL). Reframed as a texture-fails-to-bind /
+   terrain-lighting-goes-black case; needs a same-spot GL capture to even
+   confirm it's a vk divergence. **Fourth finding:** building glass flips
+   transparent↔opaque-dark with camera pan on vk (static building, clean
+   screenshot pair) — **rules out team-color *selection* logic as the mech
+   flip's cause** (a plain building has no team-color path yet flips too),
+   pointing the mech flip at a lower-level texture-binding or alpha-sort
+   issue. Best current repro for the flip class; investigate together. See
+   ENGINEERING_LOG for both. **Correction (deeper trace):** building
+   windows are drawn *untextured* (`addVertices(0xffffffff, …,
+   MC2_DRAWALPHA)`, `tgl.cpp:2671`), coloured by per-vertex lighting —
+   daytime windows are meant to be dark grey `0x2f2f2f` (`tgl.cpp:1763`), so
+   the *dark* state is correct and the *see-through* state is the bug. Being
+   untextured, the glass does **not** constrain the mech flip after all: mech
+   team colour is a per-instance *recoloured texture* (`setPaintScheme`,
+   `mech3d.cpp:1619`), a texture-binding path — so glass (untextured-alpha
+   compositing) and mech (texture) are **separate bugs**. **Glass
+   root-caused:** an alariq-port bug, not vk — the window pass draws
+   untextured alpha with depth-write on (`ZWrite=1`, `ZCompare=LEQUAL`,
+   `txmmgr.cpp:1404-1418`) and a port FIXME (`txmmgr.cpp:1412`, sebi 2026)
+   already describes it: the "hangar in first mission" window mesh fails the
+   depth test against the hangar shell at some angles and isn't drawn →
+   see-through. User confirmed it reproduces on GL, so it's **off the task-4
+   vk-parity list**. **Provenance CONFIRMED via a diff against the pristine
+   Microsoft 2006 shared-source** (`SimonDarksideJ/MechCommander2-Source`,
+   `Source/MCLib/txmmgr.cpp`): the original draws windows in the same
+   depth-writing alpha pass (`ZCompare=LEQUAL`, `ZWrite=1`,
+   `ms_txmmgr.cpp:796-810`) — so the root cause is **original Microsoft
+   code**, an **original-engine wart** (like task 18), *not* a port
+   regression. The port only added imperfect *mitigation* (2018 two-pass
+   split; 2026 forward→reverse iteration + FIXME). **Fix attempted 2026-07-21
+   (ZWrite=0; fixed vertex z-bias; hardware polygon offset) and REVERTED** —
+   all dead ends: the real mechanism is transparent-vs-transparent (glass
+   panes depth-reject each other), which needs back-to-front depth sorting the
+   engine doesn't do. Left as the wart; full post-mortem in ENGINEERING_LOG.
+   A proper fix = a transparency-sorting pass (its own future task, see
+   standing items).
 5. ~~**Solo Mission screen check**~~ DONE (2026-07-18): first test since
    M1, first-ever on vk. Full chain (list → select → briefing → mech bay
    → back → reopen, no duplication → exit) verified clean.
@@ -146,7 +214,7 @@ that discipline is what makes model switches cheap.
     a header-filter/standalone-compile artifact, but glance at it so the
     advisory hook isn't silently degraded.
 
-18. **Fix swapchain binary-semaphore reuse (vk)**: the Khronos validation layer
+19. **Fix swapchain binary-semaphore reuse (vk)**: the Khronos validation layer
     flags `VUID-vkQueueSubmit-pSignalSemaphores-00067` every frame — a render-
     completion semaphore is signalled again while the swapchain may still be
     using it from a prior present, because the code reuses one semaphore
@@ -204,6 +272,21 @@ that discipline is what makes model switches cheap.
     for the missing-file retry-loop hang, which is still accurate in intent).
     Surfaced by the 2026-07-20 lead review. Trivial. — **SONNET** (fold into
     any nearby docs PR rather than spending a session on it alone).
+
+### Bugs found during playtesting
+
+18. **Mech shadows swing wildly with small heading changes**: found during
+    task 4 playtesting (Training 1), but reproduces on both GL and VK, so
+    it's not a VK-parity issue — original-engine behavior (predates the
+    alariq port per `git blame`), not a porting regression. Root-cause
+    hypothesis already written up in ENGINEERING_LOG 2026-07-20: the sun's
+    light direction gets rotated by the mech's own yaw a second time in
+    `TG_Shape::MultiTransformShadows` (`mclib/tgl.cpp:2910`), on top of the
+    vertex already being fully transformed to world space — coupling shadow
+    angle to mech heading instead of a fixed world sun direction. Not
+    started. — **OPUS** (rendering-math correctness call; confirm the
+    hypothesis before touching the fix, and check it doesn't collide with
+    the separate `TG_LIGHT_TERRAIN` rotation at `tgl.cpp:2027`).
 
 ### Standing FABLE-only items
 
