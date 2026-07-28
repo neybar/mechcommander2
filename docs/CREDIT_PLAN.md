@@ -146,6 +146,26 @@ that discipline is what makes model switches cheap.
     a header-filter/standalone-compile artifact, but glance at it so the
     advisory hook isn't silently degraded.
 
+18. **Fix swapchain binary-semaphore reuse (vk)**: the Khronos validation layer
+    flags `VUID-vkQueueSubmit-pSignalSemaphores-00067` every frame — a render-
+    completion semaphore is signalled again while the swapchain may still be
+    using it from a prior present, because the code reuses one semaphore
+    instead of indexing per swapchain image. Real presentation-sync bug: it
+    risks tearing, flicker or a hang, and it is undefined behaviour regardless.
+    Found 2026-07-27 while running validation during the pavement-holes hunt
+    (unrelated to that bug; see ENGINEERING_LOG). Fix is either **a semaphore
+    per swapchain image**, indexed by the acquired image index, or
+    `VK_KHR_swapchain_maintenance1` to fence the present. Khronos guidance:
+    <https://docs.vulkan.org/guide/latest/swapchain_semaphore_reuse.html>.
+    Repro: run any mission under
+    `VK_LAYER_PATH=$VULKAN_SDK/share/vulkan/explicit_layer.d
+    VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation` and read stderr — should be
+    **zero** validation errors when fixed. The same run also reports
+    `VUID-vkDestroyDevice-device-05137` (objects still alive at teardown);
+    worth cleaning up in the same pass, and it may be related to the open
+    audio-teardown crash in task 3. — **OPUS** (sync/lifetime reasoning).
+    **Not started.**
+
 ### M2 perf pass
 
 11. **vk perf pass**: Instruments/MTL_HUD profile first, then the known
