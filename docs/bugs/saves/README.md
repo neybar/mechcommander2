@@ -18,18 +18,20 @@ textures; see `../2026-07-24-vk-cement-holes-FINDINGS.md`). Kept because the fix
 was verified from one camera position only, so this is the known-good comparison
 point if the holes ever come back.
 
-**To restore:**
+**To run it — pass the path, don't copy over the quicksave.** `MC2_LOAD_SAVE`
+takes an explicit `.ims` whenever the value contains a path separator
+(`mechcmd2.cpp`, `strpbrk(loadEnv, "/\\")`), so the harness can load an archived
+save directly and `~/.mechcommander2/savegame/testgame.ims` is never touched:
 
 ```sh
-cp docs/bugs/saves/2026-07-27-building13-pavement-holes.ims \
-   ~/.mechcommander2/savegame/testgame.ims
+tools/vkprobe/run.sh --capture screenshot --at 45 \
+  --save "$(pwd)/docs/bugs/saves/2026-07-27-building13-pavement-holes.ims"
 ```
 
-**To reach it headlessly** (no synthetic input, ~60s, game covers the display):
+Add `--bin ~/Games/mc2-port/mc2` for the GL comparison.
 
-```sh
-tools/vkprobe/run.sh --save 1 --capture screenshot --at 45
-```
-
-`--save 1` resolves to this default `testgame.ims` via the `MC2_LOAD_SAVE`
-engine hook. Use `--bin ~/Games/mc2-port/mc2` for the GL comparison.
+**Why it matters:** `--save 1` uses the *live* `testgame.ims`, and the user's own
+play-testing overwrites that constantly — a 2026-07-27 verification run silently
+landed in the wrong mission on natural terrain because Mission 2 progress had
+replaced the repro. Always pass the explicit path for archived saves; there is
+never a reason to `cp` over someone's quicksave.
