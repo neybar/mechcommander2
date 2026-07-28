@@ -15,25 +15,53 @@ Missions load and play start-to-finish (movement, combat, win triggers,
 campaign progression user-verified on Training 1 & 2). Windowed mode
 (`b FullScreen = FALSE` in options.cfg) and in-game resolution switching
 work; menus stay 800x600 by design, chosen resolution applies at mission
-load. Game dir: `~/Games/mc2-port` (built from mc2srcdata; deployment
-recipe in ENGINEERING_LOG — note `data/missions/` and `data/campaign/`
-must be unpacked on disk).
+load. Resolution requests are clamped to the desktop display's bounds
+(`CPrefs::applyPrefs` in `prefs.cpp`). Game dir: `~/Games/mc2-port` (built
+from mc2srcdata; deployment recipe in ENGINEERING_LOG — note
+`data/missions/` and `data/campaign/` must be unpacked on disk).
 
-Dev hooks: `MC2_AUTOQUIT_SECS=N` (clean quit after N secs),
-`./mc2 -mission mc2_01` (skip menus/logistics, quickstart lance),
-`MC2_DEBUG_INPUT=1` (per-second mouse coordinate-chain dump),
-`./mc2 -assetdir <path>` / `MC2_ASSET_DIR=<path>` (run from any CWD; see
-BUILDING.md — AD-4, done 2026-07-18).
+**M2 in progress (2026-07-27): the Vulkan backend exists and is playable.**
+Both backends build from one tree — `cmake --build build` → GL, `cmake --build
+build-vk` → Vulkan (MoltenVK). Mission 1 has been completed and Mission 2
+started on the vk build. It is **not yet at GL parity**: several rendering
+bugs remain open (see `docs/CREDIT_PLAN.md` task 4 and the
+`docs/bugs/` notes). No perf pass has been done.
 
-Next: M2 (Vulkan renderer), starting with the renderer abstraction audit
-(gos/MLR boundary — where does a Vulkan backend plug in). GitHub remote is
-live: github.com/neybar/mechcommander2 (public, `main` branch-protected,
-PR required — done 2026-07-18, see ENGINEERING_LOG).
+Next up, in `docs/CREDIT_PLAN.md` order — **task 4** effects/transparency
+parity sweep (needs user playtesting, not started), **task 19** swapchain
+binary-semaphore reuse (a real vk sync bug the validation layer flags every
+frame), **task 3's** leftover intermittent SIGSEGV in `SoundEngine::destroy()`
+on shutdown, **task 10** clang-tidy warning audit, then **task 11** the vk
+perf pass. Pick from the plan rather than inventing an order.
 
-Resolution requests are now clamped to the desktop display's bounds
-(2026-07-20, `CPrefs::applyPrefs` in `prefs.cpp`; see ENGINEERING_LOG). The
-load-screen exit-animation/prefs-ordering item once carried forward here was
-already fixed (commit `be5ec77`, predates this note) — removed.
+GitHub remote is live: github.com/neybar/mechcommander2 (public, `main`
+branch-protected, PR required — see ENGINEERING_LOG).
+
+### Dev hooks
+
+Runtime hooks (all `#ifndef FINAL`, all off unless set):
+
+| Hook | Effect |
+|---|---|
+| `./mc2 -mission mc2_01` | Skip menus/logistics, quickstart lance |
+| `./mc2 -assetdir <path>` / `MC2_ASSET_DIR` | Run from any CWD (see BUILDING.md) |
+| `MC2_AUTOQUIT_SECS=N` | Clean quit after N secs |
+| `MC2_LOAD_SAVE=<path\|1>` / `MC2_LOAD_SAVE_SECS` | Auto-load a savegame N secs into a mission, no synthetic input. A value containing `/` loads that explicit `.ims`; `1` uses `savePath/testgame.ims` |
+| `MC2_DEBUG_INPUT=1` | Per-second mouse coordinate-chain dump |
+| `MC2_VK_DEBUG=1` | vk draw/state logging (incl. `BADTEX`, `EXTREME-ARGB`) |
+| `MC2_VK_TRACEPX="x,y"` | Log every pass whose triangles cover that pixel |
+| `MC2_VK_RIALOG="x,y"` | Log indexed draws whose bbox covers that pixel |
+| `MC2_VERTDUMP=<path>` / `_AT_SECS` | One-frame terrain vertex dump, for GL-vs-vk diffing |
+| `MC2_FOG_DEBUG=1` | Fog-bake dump |
+| `MC2_VK_NO_DSET_CACHE=1` | Disable the descriptor-set cache |
+| `MC2_VK_CAPTURE_AT_SECS=N` / `MC2_VK_CAPTURE_FILE` | Write a Metal `.gputrace` headlessly (also needs `METAL_CAPTURE_ENABLED=1`) |
+
+**`tools/vkprobe/run.sh`** wraps launch → settle → capture → clean-quit for
+headless repros (`--save`, `--capture screenshot|gputrace|log`, `--at/--quit`,
+`--bin` for GL vs vk). It passes through any exported `MC2_*`, so check
+`env | grep MC2_` before a capture that matters — a stale export will silently
+change the result. Archived repro saves live in `docs/bugs/saves/`; load them
+**by explicit path**, never by copying over the user's live quicksave.
 
 ## Key decisions (context for all work)
 
@@ -86,6 +114,22 @@ already fixed (commit `be5ec77`, predates this note) — removed.
   the Generals Mac port that inspired this project): one entry per significant
   bug hunt or porting battle — symptom, cause, fix. Append entries as part of
   the work, not after the fact.
+- **Updating the docs is part of the work, not a separate favour to ask about.**
+  Ship doc changes in the same PR as the change that made them true, without
+  being prompted:
+  - `CLAUDE.md` "Current status" whenever the milestone, build layout, dev-hook
+    list, or what's-next changes. A stale status here misleads every future
+    session, so treat it as the highest-value file in the repo.
+  - `docs/ENGINEERING_LOG.md` for the symptom → cause → fix of anything
+    non-obvious, **including refuted hypotheses** — knowing what was ruled out,
+    and on what evidence, is what stops the next session re-running it.
+  - `docs/CREDIT_PLAN.md` when a task starts, finishes, or a new one is found.
+    Check for duplicate task numbers after any merge.
+  - `docs/bugs/<date>-<slug>.md` for a bug worth investigating later, even one
+    you aren't fixing now. Note whether it reproduces on **both** backends.
+  - When a conclusion turns out to be wrong, **correct the doc that recorded
+    it** and say why it was wrong. A confidently-worded bad conclusion costs
+    more than no conclusion — see the 2026-07-27 pavement-holes entry.
 - Prefer minimal diffs against the vendored base code; keep our changes
   separable from upstream's so provenance stays clear.
 
