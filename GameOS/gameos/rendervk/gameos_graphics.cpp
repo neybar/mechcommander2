@@ -22,7 +22,7 @@
 #include <map>
 #include <string>
 #include <vector>
-
+#include <set>
 static graphics::RenderWindowHandle g_win_h = NULL;
 
 bool g_disable_quads = true;
@@ -44,9 +44,26 @@ static bool g_req_fullscreen = false;
 static float g_viewport[4] = {0, 0, 1, 1}; // top, left, bottom, right
 static vec4 g_render_viewport(0, 0, 0, 0);
 static mat4 g_projection = mat4::identity();
+// MC2_VK_POSVIEWPORT experiment (cement-holes hunt): Y-flip in the projection +
+// positive-height viewport, instead of the default negative-height viewport.
+static bool g_pos_viewport = getenv("MC2_VK_POSVIEWPORT") != NULL;
 
 static char g_last_draw_desc[256]; // MC2_VK_DEBUG: last quad draw of the frame
 static const bool g_vk_debug = getenv("MC2_VK_DEBUG") != NULL;
+const char* g_dbgSrc = "?"; // MC2_VK_TRACEPX: caller tag set by txmmgr per flush loop
+
+// MC2_VK_GUARDCLIP experiment (cement-holes hunt): CPU-clip every triangle to
+// the viewport (plus MC2_VK_GUARDCLIP_MARGIN game px, default 64) before
+// submit. The engine feeds D3D XYZRHW pre-transformed terrain that reaches far
+// off-screen (x ~ -2781..+5203 in a 2048-wide space); Direct3D never
+// frustum-clips those verts, it leans on the rasterizer's guard band. Desktop
+// GL rasterizes them cleanly, MoltenVK/Metal is the suspect for dropping the
+// coverage. With this on, Metal only ever sees on-screen-sized primitives — if
+// the holes vanish, the guard-band hypothesis is confirmed and this is the fix.
+static const bool g_guardclip = getenv("MC2_VK_GUARDCLIP") != NULL;
+static const float g_guardclip_margin =
+        getenv("MC2_VK_GUARDCLIP_MARGIN")
+        ? (float)atof(getenv("MC2_VK_GUARDCLIP_MARGIN")) : 64.0f;
 
 ////////////////////////////////////////////////////////////////////////////////
 // textures
@@ -104,6 +121,41 @@ static VkStubTexture* getTexture(DWORD handle)
     return &g_textures[handle - 1];
 }
 
+// Port of the GL path's makeKindaSolid/doesLookLikeAlpha/convertIfNecessary
+// (rendergl/gameos_graphics.cpp:841-880), which the vk backend never got.
+//
+// Some retail TGAs are logically opaque but carry an all-zero alpha channel.
+// The GL path force-opaques those whenever the gos format says Solid; without
+// it, the shader's `c *= tex_color` yields alpha 0 and the draw either blends
+// to nothing (AlphaInvAlpha) or is discarded outright by the alpha test — the
+// primitive rasterizes perfectly and paints no pixels. Upstream's own comment
+// names the exact case: "happens when drawing terrain, see TerrainQuad::draw()
+// case when no detail and no overlay but isCement is true", i.e. the cement
+// pads, which is precisely the vk-only pavement-holes bug.
+static bool looksLikeAlpha(const VkStubTexture& t)
+{
+    for(size_t i = 0; i < t.pixels_.size(); ++i)
+        if((t.pixels_[i] & 0xff000000u) != 0xff000000u)
+            return true;
+    return false;
+}
+
+static void makeKindaSolid(VkStubTexture& t)
+{
+    for(size_t i = 0; i < t.pixels_.size(); ++i)
+        t.pixels_[i] |= 0xff000000u;
+}
+
+// resolve gos_Texture_Detect the same way GL does, then force-opaque if Solid
+static void normalizeAlpha(VkStubTexture& t, bool has_alpha_channel)
+{
+    if(t.format_ == gos_Texture_Detect)
+        t.format_ = (has_alpha_channel && looksLikeAlpha(t)) ? gos_Texture_Alpha
+                                                            : gos_Texture_Solid;
+    if(t.format_ == gos_Texture_Solid && has_alpha_channel)
+        makeKindaSolid(t);
+}
+
 // decode into the stub's 8888 buffer (RGB gets alpha 255)
 static void fillPixels(VkStubTexture& t, const Image& img)
 {
@@ -123,6 +175,7 @@ static void fillPixels(VkStubTexture& t, const Image& img)
             dst[4*i+3] = 0xff;
         }
     }
+    normalizeAlpha(t, img.getFormat() == FORMAT_RGBA8);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -554,6 +607,14 @@ VkPipeline getPipeline(ShaderKind sh, TopoKind topo, const gosVertexDeclaration*
     rs.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
     rs.polygonMode = VK_POLYGON_MODE_FILL;
     rs.lineWidth = 1.0f;
+    // MC2_VK_DEPTHCLAMP (experiment, cement-holes hunt): the game feeds D3D
+    // XYZRHW pre-transformed vertices, which D3D never frustum/depth-clips
+    // (guard-band only). Vulkan's default (depthClampEnable=FALSE) turns depth
+    // CLIP on, which can drop coverage those verts assume is kept. Setting clamp
+    // on (=> clip off) matches D3D. Needs the depthClamp device feature (enabled
+    // in gos_render.cpp).
+    static const bool depthClamp = getenv("MC2_VK_DEPTHCLAMP") != NULL;
+    rs.depthClampEnable = depthClamp ? VK_TRUE : VK_FALSE;
     switch(g_render_states[gos_State_Culling]) {
         case gos_Cull_CW:  rs.cullMode = VK_CULL_MODE_BACK_BIT; break;
         case gos_Cull_CCW: rs.cullMode = VK_CULL_MODE_FRONT_BIT; break;
@@ -923,6 +984,96 @@ VkCommandBuffer setupDraw(ShaderKind sh, TopoKind topo, const gosVertexDeclarati
 }
 
 // immediate-mode draw: vertices copied into the ring
+// MC2_VK_TRACEPX="x,y": 2D point-in-triangle test in gos_VERTEX screen space.
+static bool tracepx_inTri(float px, float py,
+        const gos_VERTEX& a, const gos_VERTEX& b, const gos_VERTEX& c)
+{
+    float d1 = (px - b.x) * (a.y - b.y) - (a.x - b.x) * (py - b.y);
+    float d2 = (px - c.x) * (b.y - c.y) - (b.x - c.x) * (py - c.y);
+    float d3 = (px - a.x) * (c.y - a.y) - (c.x - a.x) * (py - a.y);
+    bool neg = (d1 < 0) || (d2 < 0) || (d3 < 0);
+    bool pos = (d1 > 0) || (d2 > 0) || (d3 > 0);
+    return !(neg && pos);
+}
+
+// ---- MC2_VK_GUARDCLIP: CPU viewport clip of XYZRHW triangles ---------------
+// Screen-space Sutherland-Hodgman. x,y,z and rhw are all linear in screen space
+// for pre-transformed verts, so they lerp directly; u,v are NOT — the
+// screen-linear quantities are u*rhw and v*rhw, so those are interpolated and
+// divided back, otherwise every clipped edge skews its texture. Vertex colors
+// are Gouraud (screen-linear in D3D too), so they lerp per byte.
+static inline DWORD gc_lerpColor(DWORD a, DWORD b, float t)
+{
+    DWORD out = 0;
+    for(int s = 0; s < 32; s += 8) {
+        const float ca = (float)((a >> s) & 0xffu);
+        const float cb = (float)((b >> s) & 0xffu);
+        int c = (int)(ca + (cb - ca) * t + 0.5f);
+        if(c < 0) c = 0; else if(c > 255) c = 255;
+        out |= ((DWORD)c) << s;
+    }
+    return out;
+}
+
+static inline gos_VERTEX gc_lerp(const gos_VERTEX& a, const gos_VERTEX& b, float t)
+{
+    gos_VERTEX r;
+    r.x = a.x + (b.x - a.x) * t;
+    r.y = a.y + (b.y - a.y) * t;
+    r.z = a.z + (b.z - a.z) * t;
+    const float rhw = a.rhw + (b.rhw - a.rhw) * t;
+    r.rhw = rhw;
+    const float uw = a.u * a.rhw, vw = a.v * a.rhw;
+    const float uwn = uw + (b.u * b.rhw - uw) * t;
+    const float vwn = vw + (b.v * b.rhw - vw) * t;
+    r.u = (rhw != 0.0f) ? uwn / rhw : a.u;
+    r.v = (rhw != 0.0f) ? vwn / rhw : a.v;
+    r.argb = gc_lerpColor(a.argb, b.argb, t);
+    r.frgb = gc_lerpColor(a.frgb, b.frgb, t);
+    return r;
+}
+
+// clip polygon `in` (n verts) against one axis-aligned half-plane
+static int gc_clipPlane(const gos_VERTEX* in, int n, gos_VERTEX* out,
+                        int axis /*0=x,1=y*/, float lim, bool keepGreater)
+{
+    int m = 0;
+    for(int i = 0; i < n; ++i) {
+        const gos_VERTEX& a = in[i];
+        const gos_VERTEX& b = in[(i + 1) % n];
+        const float da = (axis == 0 ? a.x : a.y) - lim;
+        const float db = (axis == 0 ? b.x : b.y) - lim;
+        const bool ina = keepGreater ? (da >= 0.0f) : (da <= 0.0f);
+        const bool inb = keepGreater ? (db >= 0.0f) : (db <= 0.0f);
+        if(ina)
+            out[m++] = a;
+        if(ina != inb && da != db)
+            out[m++] = gc_lerp(a, b, da / (da - db));
+    }
+    return m;
+}
+
+// Clip one triangle to [minx,maxx]x[miny,maxy]; fan-triangulate the result into
+// `dst`. Returns the number of triangles emitted (0 = fully off-screen).
+static int gc_clipTri(const gos_VERTEX* tri, float minx, float maxx,
+                      float miny, float maxy, std::vector<gos_VERTEX>& dst)
+{
+    // each half-plane can add at most one vertex: 3 -> 7 worst case
+    gos_VERTEX a[16], b[16];
+    int n = 3;
+    a[0] = tri[0]; a[1] = tri[1]; a[2] = tri[2];
+    n = gc_clipPlane(a, n, b, 0, minx, true);  if(n < 3) return 0;
+    n = gc_clipPlane(b, n, a, 0, maxx, false); if(n < 3) return 0;
+    n = gc_clipPlane(a, n, b, 1, miny, true);  if(n < 3) return 0;
+    n = gc_clipPlane(b, n, a, 1, maxy, false); if(n < 3) return 0;
+    for(int i = 1; i + 1 < n; ++i) {
+        dst.push_back(a[0]);
+        dst.push_back(a[i]);
+        dst.push_back(a[i + 1]);
+    }
+    return n - 2;
+}
+
 void emitDraw(ShaderKind sh, TopoKind topo, const gos_VERTEX* vertices, int count,
               const float* foreground /*text only*/)
 {
@@ -933,16 +1084,62 @@ void emitDraw(ShaderKind sh, TopoKind topo, const gos_VERTEX* vertices, int coun
     if(!fr || !fr->frame_active || !engineInit())
         return;
 
+    // MC2_VK_TRACEPX="x,y": log, in draw order, every distinct 3D pass whose
+    // triangles cover that screen pixel — a headless per-pixel frame debugger
+    // to name the pass painting the fog-coloured apron over the terrain.
+    if(g_vk_debug && count >= 3) {
+        static const char* tpx = getenv("MC2_VK_TRACEPX");
+        if(tpx) {
+            static float TX = -1.f, TY = -1.f;
+            if(TX < 0.f) sscanf(tpx, "%f,%f", &TX, &TY);
+            for(int i = 0; i + 2 < count; i += 3) {
+                if(tracepx_inTri(TX, TY, vertices[i], vertices[i+1], vertices[i+2])) {
+                    DWORD th = (DWORD)g_render_states[gos_State_Texture];
+                    VkStubTexture* tt = getTexture(th);
+                    static std::set<uint64_t> seen;
+                    uint64_t key = ((uint64_t)th << 8)
+                                 ^ ((uint64_t)(unsigned)vertices[i].argb)
+                                 ^ ((uint64_t)g_render_states[gos_State_AlphaMode] << 40);
+                    if(seen.insert(key).second)
+                        printf("[VKDBG] TRACEPX src=%s sh=%d tex=%u '%s' argb=[%08x,%08x,%08x] "
+                               "am=%d texBlend=%d zw=%d zc=%d atest=%d z=%.3f\n",
+                               g_dbgSrc, (int)sh, th,
+                               (tt && tt->alive_) ? tt->name_.c_str() : "<none>",
+                               (unsigned)vertices[i].argb, (unsigned)vertices[i+1].argb,
+                               (unsigned)vertices[i+2].argb,
+                               g_render_states[gos_State_AlphaMode],
+                               g_render_states[gos_State_TextureMapBlend],
+                               g_render_states[gos_State_ZWrite],
+                               g_render_states[gos_State_ZCompare],
+                               g_render_states[gos_State_AlphaTest], vertices[i].z);
+                    break;
+                }
+            }
+        }
+    }
+
     VkImageView views[3] = { NULL, NULL, NULL };
     if(sh != SHADER_VERTEX) {
         DWORD tex_handle = (DWORD)g_render_states[gos_State_Texture];
         VkStubTexture* t = getTexture(tex_handle);
         if(!t || !t->alive_) {
-            static int spewed = 0;
-            if(g_vk_debug && spewed < 40) {
-                printf("[VKDBG] textured draw with bad handle %u (t=%p alive=%d) count=%d\n",
-                       tex_handle, (void*)t, t ? (int)t->alive_ : -1, count);
-                spewed++;
+            // MC2_VK_DEBUG: a textured draw whose handle no longer resolves to a
+            // live texture. It falls back to SHADER_VERTEX (pure vertex color),
+            // so on-screen it becomes a flat quad in its raw argb — this is the
+            // black/white-ground-quad signature. Dedup per handle (not a global
+            // cap) so the culprit can't hide behind load-time churn, and print
+            // enough to place it: intended texture name, vertex count, and the
+            // first vertex's screen x,y + argb.
+            if(g_vk_debug) {
+                static std::set<DWORD> seen_bad;
+                if(seen_bad.insert(tex_handle).second) {
+                    printf("[VKDBG] BADTEX handle=%u name='%s' alive=%d count=%d "
+                           "v0=(%.0f,%.0f,z=%.3f) argb=%08x\n",
+                           tex_handle, t ? t->name_.c_str() : "<unknown>",
+                           t ? (int)t->alive_ : -1, count,
+                           vertices[0].x, vertices[0].y, vertices[0].z,
+                           (unsigned)vertices[0].argb);
+                }
             }
             if(sh == SHADER_TEXT)
                 return; // text without its font texture — nothing sane to draw
@@ -951,6 +1148,38 @@ void emitDraw(ShaderKind sh, TopoKind topo, const gos_VERTEX* vertices, int coun
             if(!textureToGpu(t))
                 return;
             views[0] = t->view_;
+            // MC2_VK_DEBUG: terrain/world tiles are drawn here (SHADER_TEX_VERTEX)
+            // as texture x per-vertex argb. Some tiles come through with an
+            // EXTREME argb (pure white 0x..ffffff -> washed white, or RGB 0 ->
+            // black) that GL renders as normal grey. Log those: which texture,
+            // the argb, count, and the first vertex's screen x,y. Deduped by
+            // (handle, white-vs-black) so the real tiles aren't drowned out.
+            if(g_vk_debug && sh == SHADER_TEX_VERTEX && count > 0) {
+                uint32_t a = (uint32_t)vertices[0].argb;
+                uint32_t rgb = a & 0x00ffffffu;
+                bool white = (rgb == 0x00ffffffu);
+                bool black = (rgb == 0x0u);
+                if(white || black) {
+                    static std::set<uint64_t> seen_ex;
+                    uint64_t k = ((uint64_t)tex_handle << 1) | (white ? 1u : 0u);
+                    if(seen_ex.insert(k).second)
+                        printf("[VKDBG] EXTREME-ARGB %s tex=%u '%s' argb=%08x "
+                               "frgb=%08x fogState=%08x fogW=%.3f "
+                               "alphaMode=%d texBlend=%d zwrite=%d atest=%d "
+                               "count=%d v0=(%.0f,%.0f,z=%.3f)\n",
+                               white ? "WHITE" : "BLACK", tex_handle,
+                               t->name_.c_str(), a,
+                               (uint32_t)vertices[0].frgb,
+                               (uint32_t)g_render_states[gos_State_Fog],
+                               (float)(((uint32_t)vertices[0].frgb >> 24) & 0xffu) / 255.0f,
+                               g_render_states[gos_State_AlphaMode],
+                               g_render_states[gos_State_TextureMapBlend],
+                               g_render_states[gos_State_ZWrite],
+                               g_render_states[gos_State_AlphaTest],
+                               count,
+                               vertices[0].x, vertices[0].y, vertices[0].z);
+                }
+            }
         }
     }
 
@@ -961,6 +1190,49 @@ void emitDraw(ShaderKind sh, TopoKind topo, const gos_VERTEX* vertices, int coun
     if(foreground)
         memcpy(pc.v1, foreground, sizeof(pc.v1));
     pc.flags = g_render_states[gos_State_AlphaTest] ? 1u : 0u;
+
+    // MC2_VK_GUARDCLIP: replace the triangle list with a viewport-clipped one so
+    // no primitive Metal sees extends beyond the screen (+margin).
+    static std::vector<gos_VERTEX> gc_out; // renderer is single-threaded
+    if(g_guardclip && topo == TOPO_TRIS && count >= 3) {
+        const float m = g_guardclip_margin;
+        const float minx = -m, maxx = (float)g_width + m;
+        const float miny = -m, maxy = (float)g_height + m;
+        static uint64_t n_in = 0, n_out = 0, n_dropped = 0, n_split = 0;
+        gc_out.clear();
+        gc_out.reserve((size_t)count * 2);
+        for(int i = 0; i + 2 < count; i += 3) {
+            const gos_VERTEX* t = vertices + i;
+            const bool inside =
+                    t[0].x >= minx && t[0].x <= maxx && t[0].y >= miny && t[0].y <= maxy &&
+                    t[1].x >= minx && t[1].x <= maxx && t[1].y >= miny && t[1].y <= maxy &&
+                    t[2].x >= minx && t[2].x <= maxx && t[2].y >= miny && t[2].y <= maxy;
+            ++n_in;
+            if(inside) {
+                gc_out.push_back(t[0]); gc_out.push_back(t[1]); gc_out.push_back(t[2]);
+                ++n_out;
+            } else {
+                const int emitted = gc_clipTri(t, minx, maxx, miny, maxy, gc_out);
+                if(emitted == 0) ++n_dropped; else { n_out += emitted; ++n_split; }
+            }
+        }
+        if(g_vk_debug) {
+            static time_t last = 0;
+            const time_t now = time(NULL);
+            if(now != last) {
+                last = now;
+                printf("[VKDBG] GUARDCLIP margin=%.0f tris_in=%llu -> out=%llu "
+                       "(clipped=%llu dropped=%llu)\n", m,
+                       (unsigned long long)n_in, (unsigned long long)n_out,
+                       (unsigned long long)n_split, (unsigned long long)n_dropped);
+                fflush(stdout);
+            }
+        }
+        if(gc_out.empty())
+            return;
+        vertices = gc_out.data();
+        count = (int)gc_out.size();
+    }
 
     VkDeviceSize voff = 0;
     uint8_t* dst = ringAlloc((VkDeviceSize)count * sizeof(gos_VERTEX), 4, &voff);
@@ -1027,11 +1299,18 @@ void engineBeginFrame()
     vkResetDescriptorPool(fr->device, g_eng.dpool, 0);
 
     // negative-height viewport = GL clip-space orientation (core in Vk 1.1)
+    // MC2_VK_POSVIEWPORT (experiment, cement-holes hunt): flip Y via the
+    // projection matrix (updateProjection) + a POSITIVE-height viewport instead,
+    // to test whether MoltenVK's negative-viewport emulation is what drops
+    // rasterization coverage on the terrain holes. NOTE: the 3D-model
+    // (ShapeRenderer) path uses its own MVP and relies on this global viewport,
+    // so with the flag on the mechs/buildings render upside down — expected;
+    // only the terrain-hole behavior is the signal here.
     VkViewport vp = {};
     vp.x = 0.0f;
-    vp.y = (float)fr->extent.height;
+    vp.y = g_pos_viewport ? 0.0f : (float)fr->extent.height;
     vp.width = (float)fr->extent.width;
-    vp.height = -(float)fr->extent.height;
+    vp.height = g_pos_viewport ? (float)fr->extent.height : -(float)fr->extent.height;
     vp.minDepth = 0.0f;
     vp.maxDepth = 1.0f;
     vkCmdSetViewport(fr->draw_cb, 0, 1, &vp);
@@ -1404,10 +1683,29 @@ static void emitRetainedDraw(gosRenderMaterial* mat, HGOSBUFFER ib, HGOSBUFFER v
     // textures from render states (tex1..tex3, YCbCr uses all three)
     const int tex_states[3] = { gos_State_Texture, gos_State_Texture2, gos_State_Texture3 };
     for(int i = 0; i < 3; ++i) {
-        VkStubTexture* t = getTexture((DWORD)g_render_states[tex_states[i]]);
+        DWORD th = (DWORD)g_render_states[tex_states[i]];
+        VkStubTexture* t = getTexture(th);
         if(t && t->alive_) {
             if(textureToGpu(t))
                 views[i] = t->view_;
+            else if(g_vk_debug) {
+                // live texture that failed GPU upload -> stays NULL -> dummy white
+                static std::set<DWORD> seen_up;
+                if(seen_up.insert(th).second)
+                    printf("[VKDBG] RETAIN slot%d UPLOAD-FAIL kind=%d handle=%u "
+                           "name='%s' -> dummy white\n",
+                           i, (int)mat->kind_, th, t->name_.c_str());
+            }
+        } else if(g_vk_debug && th != 0) {
+            // handle was set by the game but resolves dead/missing -> dummy white.
+            // This is the black/white-terrain signature (SHADER_TEX_VERTEX_LIGHTED
+            // sampling the white dummy, modulated by per-vertex light).
+            static std::set<DWORD> seen_dead;
+            if(seen_dead.insert(th).second)
+                printf("[VKDBG] RETAIN slot%d DEADTEX kind=%d handle=%u "
+                       "(t=%p alive=%d) name='%s' -> dummy white\n",
+                       i, (int)mat->kind_, th, (void*)t,
+                       t ? (int)t->alive_ : -1, t ? t->name_.c_str() : "<null>");
         }
     }
 
@@ -1922,6 +2220,50 @@ void __stdcall gos_RenderIndexedArray(gos_VERTEX* pVertexArray, DWORD NumberVert
 {
     if(!pVertexArray || !lpwIndices || NumberIndices == 0)
         return;
+
+    // MC2_VK_RIALOG="x,y": for the cement/terrain-hole hunt, log any indexed
+    // draw whose screen-space bbox covers pixel (x,y) — plus a degeneracy check
+    // — so we can see whether a cement tile actually reaches the fog-white apron
+    // and in what shape (missing/mis-placed/degenerate). Cement pads are the
+    // ISCRATERS path (txmmgr.cpp:1164), the only pavement-specific draw.
+    if(g_vk_debug) {
+        static const char* rlog = getenv("MC2_VK_RIALOG");
+        if(rlog) {
+            static float PX = -1.f, PY = -1.f;
+            if(PX < 0.f) sscanf(rlog, "%f,%f", &PX, &PY);
+            float minx = 1e30f, miny = 1e30f, maxx = -1e30f, maxy = -1e30f;
+            float minz = 1e30f, maxz = -1e30f, minw = 1e30f, maxw = -1e30f;
+            bool degenerate = false;
+            for(DWORD i = 0; i < NumberVertices; ++i) {
+                const gos_VERTEX& v = pVertexArray[i];
+                if(v.x < minx) minx = v.x; if(v.x > maxx) maxx = v.x;
+                if(v.y < miny) miny = v.y; if(v.y > maxy) maxy = v.y;
+                if(v.z < minz) minz = v.z; if(v.z > maxz) maxz = v.z;
+                if(v.rhw < minw) minw = v.rhw; if(v.rhw > maxw) maxw = v.rhw;
+                if(!(v.x > -1e6f && v.x < 1e6f) || !(v.y > -1e6f && v.y < 1e6f) ||
+                   !(v.z >= 0.f && v.z <= 1.f) || !(v.rhw > 0.f))
+                    degenerate = true;
+            }
+            bool covers = (PX >= minx && PX <= maxx && PY >= miny && PY <= maxy);
+            if(covers || degenerate) {
+                DWORD th = (DWORD)g_render_states[gos_State_Texture];
+                VkStubTexture* tt = getTexture(th);
+                printf("[VKDBG] RIALOG %s%s tex=%u '%s' nv=%u ni=%u "
+                       "bbox=(%.0f,%.0f)-(%.0f,%.0f) z=[%.4f,%.4f] rhw=[%.5f,%.5f] "
+                       "am=%d zw=%d zc=%d atest=%d\n",
+                       covers ? "COVERS" : "------",
+                       degenerate ? " DEGENERATE" : "",
+                       th, (tt && tt->alive_) ? tt->name_.c_str() : "<none>",
+                       (unsigned)NumberVertices, (unsigned)NumberIndices,
+                       minx, miny, maxx, maxy, minz, maxz, minw, maxw,
+                       g_render_states[gos_State_AlphaMode],
+                       g_render_states[gos_State_ZWrite],
+                       g_render_states[gos_State_ZCompare],
+                       g_render_states[gos_State_AlphaTest]);
+            }
+        }
+    }
+
     // expand indices CPU-side (simple and fine at these sizes)
     std::vector<gos_VERTEX> tris;
     tris.reserve(NumberIndices);
@@ -1981,8 +2323,14 @@ static graphics::RenderContextHandle g_render_ctx = NULL;
 
 static void updateProjection()
 {
+    // Default: Y-flip lives in the negative-height viewport, so the projection's
+    // Y row matches GL exactly (row1 = 0,-2/h,0,1). MC2_VK_POSVIEWPORT experiment:
+    // move the Y-flip here (row1 = 0,+2/h,0,-1) and use a positive-height viewport
+    // — same final upright image, different path through MoltenVK.
+    const float sy = g_pos_viewport ?  2.0f / (float)g_height : -2.0f / (float)g_height;
+    const float ty = g_pos_viewport ? -1.0f : 1.0f;
     g_projection = mat4(2.0f / (float)g_width, 0, 0.0f, -1.0f,
-            0, -2.0f / (float)g_height, 0.0f, 1.0f,
+            0, sy, 0.0f, ty,
             0, 0, 1.0f, 0.0f,
             0, 0, 0.0f, 1.0f);
 }

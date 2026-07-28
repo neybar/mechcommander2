@@ -938,8 +938,19 @@ void Terrain::geometry (void)
 	cameraPos.z = eye->getCameraOrigin().y;
 
 	float vClipConstant = eye->verticalSphereClipConstant;
-	float hClipConstant = eye->horizontalSphereClipConstant; 
-	
+	float hClipConstant = eye->horizontalSphereClipConstant;
+
+	// MC2_FOG_DEBUG: dump the shared fog-bake inputs (camera/eye + haze
+	// distances) and the resulting terrain distance/haze distribution, once
+	// per second. Compiles into BOTH GL and Vulkan binaries, so running the
+	// same view in each and diffing shows whether the shared bake gets
+	// different inputs (camera-state divergence) — the vk terrain-over-fog bug.
+	static const bool s_fogDbg = getenv("MC2_FOG_DEBUG") != NULL;
+	float dbgMinDist = 1e30f, dbgMaxDist = -1e30f;
+	float dbgMinElev = 1e30f, dbgMaxElev = -1e30f;
+	int dbgHazeClear = 0, dbgHazeFull = 0, dbgHazePartial = 0;
+	int dbgBelowFogStart = 0;
+
  	long i=0;
 	for (i=0;i<numberVertices;i++)
 	{
@@ -966,6 +977,10 @@ void Terrain::geometry (void)
 			objectCenter.Subtract(vPosition,cameraPos);
 			Camera::cameraFrame.trans_to_frame(objectCenter);
 			float distanceToEye = objectCenter.GetApproximateLength();
+			if (s_fogDbg) {
+				if (distanceToEye < dbgMinDist) dbgMinDist = distanceToEye;
+				if (distanceToEye > dbgMaxDist) dbgMaxDist = distanceToEye;
+			}
 
 			Stuff::Vector3D clipVector = objectCenter;
 			clipVector.z = 0.0f;
@@ -1096,9 +1111,37 @@ void Terrain::geometry (void)
 			}
 		}
 
+		if (s_fogDbg) {
+			float hf = currentVertex->hazeFactor;
+			if (hf <= 0.001f) dbgHazeClear++;
+			else if (hf >= 0.999f) dbgHazeFull++;
+			else dbgHazePartial++;
+			float elev = currentVertex->pVertex->elevation;
+			if (elev < dbgMinElev) dbgMinElev = elev;
+			if (elev > dbgMaxElev) dbgMaxElev = elev;
+			if (elev < eye->fogStart) dbgBelowFogStart++;
+		}
+
 		currentVertex++;
 	}
-	
+
+	if (s_fogDbg) {
+		static time_t s_last = 0;
+		time_t now = time(NULL);
+		if (now != s_last) {
+			s_last = now;
+			Stuff::Vector3D eo = eye->getCameraOrigin();
+			printf("[FOGDBG] eye=(%.0f,%.0f,%.0f) MinHaze=%.0f MaxClip=%.0f "
+			       "DistFactor=%.6f dist=[%.0f..%.0f] haze: clear=%d partial=%d full=%d | "
+			       "useFog=%d fogStart=%.1f fogFull=%.1f elev=[%.1f..%.1f] belowFogStart=%d\n",
+			       eo.x, eo.y, eo.z,
+			       Camera::MinHazeDistance, Camera::MaxClipDistance, Camera::DistanceFactor,
+			       dbgMinDist, dbgMaxDist, dbgHazeClear, dbgHazePartial, dbgHazeFull,
+			       (int)useFog, eye->fogStart, eye->fogFull, dbgMinElev, dbgMaxElev, dbgBelowFogStart);
+			fflush(stdout);
+		}
+	}
+
 	//-----------------------------------
 	// setup terrain quad textures
 	// Also sets up mine data.

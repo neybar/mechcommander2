@@ -1,0 +1,558 @@
+# Vulkan cement/pavement "holes" — SOLVED (2026-07-27)
+
+**Status: FIXED.** Root cause was **texture alpha, not rasterization**: some
+retail TGAs are logically opaque but carry an all-zero alpha channel, and the vk
+backend uploaded that alpha verbatim. The cement pads then blended (or
+alpha-tested) away to nothing, letting the backdrop show through as the "holes".
+The GL backend has normalized this since upstream (`makeKindaSolid`); the vk
+backend never got that step. Fix: port `convertIfNecessary`/`makeKindaSolid` to
+`rendervk/gameos_graphics.cpp` (`normalizeAlpha`, called from `fillPixels`).
+Branch `fix/vk-black-quad-diag`, fix commit `41f81b3`.
+
+**Verification (2026-07-27):**
+1. Headless screenshot at building 13 — black band and fog-white square both
+   gone, pavement continuous.
+2. **User play-test, jalance:** completed Mission 1, started Mission 2 and
+   panned the camera around. **No visible flaws.** The known bad spots he'd
+   been tracking are all clean. Closed on that basis.
+
+The repro quicksave is preserved at
+`docs/bugs/saves/2026-07-27-building13-pavement-holes.ims` (gitignored; see
+that directory's README) as the comparison point if this ever regresses.
+
+> **The "root-caused to MoltenVK/Metal rasterization" conclusion below was
+> wrong**, and it cost several sessions. It was inferred from *elimination*
+> (identical geometry in, different pixels out) without ever confirming a
+> rasterization mechanism. Everything that conclusion predicted came back clean
+> — both validation layers, the guard-band clip, depth clamp, viewport
+> orientation — because there was never anything wrong at the API or rasterizer
+> level. Lesson for the next hunt: "we ruled out the CPU side, therefore it's
+> the GPU" is not a root cause, and the thing that actually cracked it was
+> reading a **sampled texel's alpha** in the frame debugger, i.e. looking at
+> *data*, not at *state*. The refuted-hypothesis sections are kept below for
+> the record.
+
+## THE ANSWER — texture alpha channel (2026-07-27)
+
+Found in the Xcode Metal frame debugger by following draw 495 down to the texel
+it sampled. Chain of evidence:
+
+1. **Draw 495** (`drawPrimitives:Triangle vertexCount:66` = 22 tris = 11 quads)
+   green-outlines **exactly** the hole regions and nothing else. It is the
+   cement pads — small dedicated pass, not the 400-1500-vertex terrain batches.
+2. Its **vertex data is perfect**: `color = 0.573,0.573,0.573,1.0` (ordinary
+   pavement grey), `texcoord = 0.008…0.992` (proper tile UVs), `FogValue = 1.0`
+   (unfogged), rhw varying sanely 0.00066-0.00139, `gl_Position.z/w = 0.783`.
+3. Its descriptor (offset `0xAF0`, matching `Fragment Buffer 0`) samples
+   **`Texture 0x9ae4e6a80`**. That texture is a **correct cement image** —
+   and its alpha is **zero**: `R≈0.58039 G 0.572549 B≈0.53725 **A 0**`.
+4. The shader does `c = Color.bgra; c *= tex_color;` → `c.a = 1.0 * 0 = 0`.
+   With `alphaMode=3` (AlphaInvAlpha) that is `src·0 + dst·1` = destination
+   untouched; with the alpha-test flag set it is a hard `discard`. **Either way
+   the draw rasterizes perfectly and paints nothing**, which is why every
+   coverage/geometry/rasterizer hypothesis failed to explain it and why depth
+   at a "hole" matched its neighbour (0.6752 vs 0.6753 — same ground plane,
+   written by the pass underneath).
+
+**Why GL was clean:** `rendergl/gameos_graphics.cpp:841` `makeKindaSolid()`
+force-ORs `0xff000000` over every texel whenever the gos format is
+`gos_Texture_Solid`, called via `convertIfNecessary` at texture load. Upstream's
+own comment names our exact bug:
+
+> "have to do this, otherwise texture with zero alpha could be drawn with alpha
+> blend enabled, even though logically alpha blend should not be enabled!
+> (happens when drawing terrain, see TerrainQuad::draw() case when no detail and
+> no overlay but isCement is true)"
+
+alariq hit this on the GL port and fixed it; the vk backend was written without
+it. `fillPixels` already forced alpha for `FORMAT_RGB8` sources (:140) but did a
+straight `memcpy` for `FORMAT_RGBA8`, preserving the zero alpha.
+
+**The fix** (`rendervk/gameos_graphics.cpp`): `looksLikeAlpha` /
+`makeKindaSolid` / `normalizeAlpha`, mirroring the GL trio, called at the end of
+`fillPixels`. It also resolves `gos_Texture_Detect` → Alpha/Solid the same way
+GL does, so `TextureInfo->Type` reports consistently across backends.
+
+## NEXT SESSION — Metal frame-debugger plan (obsolete, kept for the record)
+
+Everything answerable from the CPU/API side is done: **seven** hypotheses
+refuted (the two newest — validation-layer misuse and guard-band clipping — are
+written up below, 2026-07-27), and the GL-vs-vk vertex diff proved the submitted
+geometry + projection + shader are identical. So the holes are **purely
+MoltenVK/Metal rasterization** of that geometry, with both validation layers
+confirming the API stream itself is spec-clean. The only tool left that can see
+*why* is the **Xcode Metal frame debugger**, driven by hand in the Xcode UI.
+
+**Correction (2026-07-27) — the Xcode MCP does not help here.** Apple's
+`xcrun mcpbridge` (Xcode 26.6) exposes ~21-24 tools, all project-authoring:
+`XcodeRead/Write/Grep/Glob/MV/RM`, `BuildProject`, `GetBuildLog`,
+`RunAllTests`/`RunSomeTests`, `XcodeListNavigatorIssues`, `RenderPreview`,
+`ExecuteSnippet`, `DocumentationSearch`. **No Metal / GPU-capture /
+frame-debugger / Instruments tools at all**, and it bridges by XPC into a
+running Xcode with an *open project* — mc2 is CMake, there is no `.xcodeproj`.
+There is also no headless `.gputrace` reader anywhere in Xcode (`xctrace` is
+Instruments/timing only; the `GPUTools*.framework`s are private and GUI-bound).
+Reading a capture is a human-in-Xcode step, full stop. Note also this machine
+keeps Xcode at `/Volumes/Media/Applications/Xcode.app` and `xcode-select` points
+at the CLT instance, so `xcrun` can't find Xcode tools until you run
+`sudo xcode-select -s /Volumes/Media/Applications/Xcode.app/Contents/Developer`.
+
+Leading hypothesis was **guard-band / large-coordinate rasterization** — the
+D3D `XYZRHW` terrain submits screen-space triangles reaching x ∈ −2781..+5203
+(2048-wide space), and rasterizers use fixed-point edge math with a finite guard
+band. **REFUTED 2026-07-27** by `MC2_VK_GUARDCLIP`; see the section below. Go
+into the frame debugger without a favoured hypothesis.
+
+Steps:
+1. Capture a `.gputrace` at a hole — use `tools/vkprobe/run.sh --save 1
+   --capture gputrace --at <n>` (writes to `docs/bugs/<date>-vkprobe/`; a fresh
+   one may already be waiting there from the handoff).
+2. In Xcode, **Debug Pixel** at a known hole. Building-13 apron hole ≈ gos(684,75)
+   = render(2009,234) on the 6016×3384 drawable; the big black band is center-right.
+   Confirm: does *any* terrain fragment run there, or is depth cleared/far?
+3. **Geometry inspector** on the terrain draw(s) covering that pixel: are the
+   covering triangles present in Metal's post-clip geometry? Are the huge
+   off-screen triangles clipped correctly, or do they vanish / mis-cover? (Watch
+   the known geometry-inspector NDC/frustum display quirk — Apple forum 773786 —
+   verify against actual coverage, not just the 3D view.)
+4. If Metal is dropping the huge triangles → fix is CPU-side: clip/limit terrain
+   triangles to a sane screen bound before submit (shared `quad.cpp`/`txmmgr.cpp`),
+   OR file an upstream MoltenVK issue with a minimal repro.
+5. If the covering triangle rasterizes but is depth-killed → re-open the depth
+   angle (but MC2_VK_DEPTHCLAMP was already refuted).
+
+Repro is fully headless now: `tools/vkprobe/run.sh --save 1 ...` reaches
+building 13 with no input (see the tooling section at the bottom). All gated
+diagnostic env vars: `MC2_VK_TRACEPX`, `MC2_VK_RIALOG`, `MC2_VERTDUMP`,
+`MC2_CEMENT_SOLID`, `MC2_VK_POSVIEWPORT`, `MC2_VK_DEPTHCLAMP`, `MC2_FOG_DEBUG`.
+
+## Symptom
+
+On the **Vulkan build only**, pavement/city-block ground shows sharp
+**fog-colored ("white") square holes** plus a **black band** that *sweeps across
+the empty squares as the camera pans* (user's description: "like the camera is
+holding up a cloud that blocks the light"). Near building 13 / the drop zone in
+Mission 1. **GL is clean at the same spot** (user-confirmed first-hand;
+comparison screenshots exist in `docs/bugs/2026-07-20-task4/`).
+
+User's field observation (load-bearing): holes appear **only in pavement / city
+blocks**, never in natural terrain, across the training maps + Mission 1.
+
+## What it actually is (measured, high confidence)
+
+Via Xcode Metal frame capture (`docs/bugs/2026-07-23-metal-capture/apron.gputrace`,
+read in full Xcode — the capture tooling is committed, see below):
+
+- The "white" squares are **holes**: at an apron pixel (render coord ~2009,234,
+  drawable is native **6016×3384**) the color is `(0.80,0.78,0.80)` = the exact
+  fog color, and **depth = 0.99999** = the cleared/far value. Nothing terrain
+  wrote depth there. Debug Pixel is **greyed** (no fragment) at that pixel.
+- The hole is filled by the **sky**: `data/tgl/128/sky07_back_left.tga` is drawn
+  **opaque (am=1), z=1.0, zwrite=1**, in `fogState=0xcdc8cc` (= the apron color).
+  With `LessEqual` depth it only survives where nothing nearer drew — i.e. in the
+  holes. So sky-through-hole = fog-colored square. The **black band** is the same
+  holes showing the cloud/haze layer, moving with the camera.
+- Where cement/terrain *does* draw, it draws **correctly**: 3 separate Debug
+  Pixels all showed dark pavement (`c ≈ 0.30–0.35`, depth ~0.75, `FogValue=1.0`,
+  no discard). So it is **not** a shading/fog/texture/alpha bug on drawn tiles.
+
+## Why only pavement (explained)
+
+`mclib/quad.cpp:1506` — a **pure cement tile** (`isCement`, no detail, no overlay)
+is submitted **only** via the `MC2_ISCRATERS` path, with **no `MC2_DRAWSOLID`
+base layer under it**:
+
+```c
+if (detail==0xffffffff && overlay==0xffffffff && isCement)
+    addVertices(..., MC2_ISTERRAIN | flags | MC2_ISCRATERS);   // cement: ONE layer
+else if (terrainHandle!=0)
+    addVertices(..., MC2_ISTERRAIN | MC2_DRAWSOLID);           // everything else
+```
+
+Regular terrain always draws a solid base, so it never holes. Cement has **no
+fallback** — if its coverage fails, you get bare depth buffer → the z=1 sky fills
+it. That is exactly why holes appear only in pavement/city blocks.
+
+## The draw path
+
+1. `ISCRATERS` nodes are drawn in `mclib/txmmgr.cpp:1164` (the `Renderer != 3`
+   block — NB `Environment.Renderer == 0` on **both** backends, so all
+   `Renderer == 3` blocks are dead code here) via
+   `gos_RenderIndexedArray(vertices, n, indexArray, n)`. `indexArray` is identity
+   `[0,1,2,…]` (`txmmgr.cpp:168`). Both cement AND solid terrain use this same
+   call — the difference is only the render **state** each block sets.
+2. Cement runs under leftover **`AlphaMode = AlphaInvAlpha` (am=3)** (set at
+   `txmmgr.cpp:1105` for the DRAWALPHA overlays and never reset in the cement
+   block), plus `ZWrite=1, ZCompare=1, AlphaTest=0`.
+3. GL impl → `gosRenderer::drawIndexedTris` (`rendergl/gameos_graphics.cpp:1850`).
+   vk impl → `rendervk/gameos_graphics.cpp:2030`: expands indices to a flat tri
+   list, `emitDraw(SHADER_TEX_VERTEX, TOPO_TRIS, …)`.
+4. vk vertex shader (`shaders/vk/gos_vertex.vert`) and the immediate projection
+   matrix (`updateProjection`, identity-Z) are **byte-identical** to GL's. The
+   `[0,1)` CPU depth cull in `quad.cpp:1496` and `Camera::projectZ` are
+   backend-independent → the **same** cement triangles are submitted on both.
+
+## Ruled OUT (do not re-chase)
+
+- Shading/fog `mix`, texture content, **alpha-test discard** (cement is
+  `AlphaTest=0`; and a discarded/blended fragment under `ZWrite=1` would still
+  write depth — the hole depth is *unwritten*, so no fragment ran there).
+- **Ring-buffer overflow** — frame completes clean under `MC2_VK_DEBUG=1`, no
+  "draws dropped" line.
+- **Degenerate vertices** — `MC2_VK_RIALOG` probe found **no** NaN/huge/oob
+  coords over the apron; z∈[0.72..], rhw sane.
+- **CPU culling / projection / vertex shader** — provably identical GL vs vk
+  (`Renderer=0` both; same matrices/shader).
+- Additive-terrain-over-sky, missing/dead textures (0 BADTEX), vertex argb,
+  blend-mode translation, camera/haze params (all from the earlier round).
+- **Backface culling / pipeline-cache cull leak** (checked 2026-07-25). Cement
+  draws under **`gos_Cull_None`** — `txmmgr.cpp:1045` sets Culling→None right
+  before all the terrain/ISCRATERS blocks (the only prior CW set is `:948`, for
+  the 3D hardware-shape pass, which finishes at `:1042`). vk bakes cull into the
+  pipeline and the **pipeline-cache key includes cull mode** (`stateBits`,
+  `gameos_graphics.cpp:463-466`, bit 15) — so cement gets its own `CULL_NONE`
+  pipeline; no stale CW pipeline is reused. With cull disabled, nothing is
+  dropped by winding, so culling cannot produce the holes.
+  - Side note (latent, NOT this bug): vk's **negative-height viewport**
+    (`vp.height = -height`, `gameos_graphics.cpp:1125`) inverts effective winding
+    vs GL for the *screen-space identity-Z path*, so the `frontFace=CCW` comment
+    at `:564` is misleading. It bites nothing today: that path always runs
+    `Cull_None`, and the 3D models (the real `Cull_CW` consumers) use a separate
+    perspective-MVP path (`ShapeRenderer`, `txmmgr.cpp:1032`) whose winding is
+    correct. Leave it; revisit only if a future culled screen-space draw appears.
+- **Vertex/index stream identity** (checked 2026-07-25). `indexArray` is identity
+  `[0,1,2,…]` (`txmmgr.cpp:168`); vk's CPU index-expansion (`gameos_graphics.cpp:2079`)
+  therefore reproduces the exact GL triangle list. `MAX_SENDDOWN = 10002`
+  (`txmmgr.cpp:67`) is divisible by 3, so batch splits land on triangle
+  boundaries on both backends. Triangles are built and depth-culled per-triangle
+  in shared code (`quad.cpp:1476-1501`, `z<1.0` cull) → **identical triangle set
+  submitted to both backends**, bit for bit.
+
+## Experiment: `DRAWSOLID` base under cement — REFUTED (2026-07-25)
+
+Hypothesis was: cement holes because pure cement is the *only* terrain drawn as a
+single `ISCRATERS` layer with no `MC2_DRAWSOLID` base to fill depth. Added a
+gated toggle `MC2_CEMENT_SOLID` (`quad.cpp:1506`) that routes pure cement through
+the `DRAWSOLID` base path like every other terrain tile.
+
+**Result: not fixed — dramatically worse.** With the flag on, the entire
+cement/pavement area shatters into white (sky) + black (haze) triangular shards;
+natural terrain (grass, road) stays perfect. Captured headless via
+`tools/vkprobe`, before/after at building 13.
+
+What this proves:
+
+- The missing-base-layer theory is **dead**. The base layer wasn't hiding
+  anything for regular terrain — regular terrain simply lacks this geometry
+  problem. Cement has it in **both** passes.
+- The baseline only showed a couple of holes because cement's leftover **`am=3`
+  (AlphaInvAlpha) blend was masking widespread partial-coverage gaps** (blending
+  cement over the background). Opaque `DRAWSOLID` removes that masking → the gaps
+  are revealed to be **pervasive across cement geometry**, systematic, not a few
+  stray tiles.
+- Same pass / states / `Cull_None` / CPU-identical geometry as the grass that
+  renders fine → the differentiator is **the cement tiles' own vertex data
+  tripping MoltenVK rasterization**. The `MC2_CEMENT_SOLID` mode is now the
+  *preferred* repro (many holes, not two) for hunting which vertex property does it.
+
+## PROVEN (2026-07-25): geometry covers the hole, MoltenVK emits no fragment
+
+Ran `MC2_VK_TRACEPX` + `MC2_VK_RIALOG` at the findings' *measured* apron pixel
+(gos **684,75** = render 2009,234 ÷ the 2048×1080→6016×3384 scale), headless via
+`tools/vkprobe`:
+
+- **TRACEPX**: `cement_1.tga` **covers** the pixel — normal grey argb `ff929292`,
+  z=0.803, am=3, zw=1, zc=1, atest=0. Many other terrain tris (mc2_02.detail,
+  quonset, oak&maple, vehiclehang) also cover it at z≈0.73–0.81.
+- **RIALOG**: that cement batch is `nv=66` (22 tris), **NOT degenerate**,
+  z=[0.58,0.80], rhw∈[0.00066,0.00138] (all positive/sane).
+- Metal capture (prior) at the same pixel: fog color, depth **0.99999** (cleared),
+  **no fragment**.
+
+TRACEPX is a CPU point-in-triangle on the *submitted* verts, so this is
+airtight: **well-formed triangles are submitted and cover the pixel in screen
+space, yet MoltenVK rasterizes zero fragments there.** Not missing geometry, not
+degenerate verts, not depth-occlusion (nothing drew at all), not the base layer
+(refuted above). The failure is **downstream of vertex submission, in MoltenVK's
+rasterization** of these triangles.
+
+Also disambiguated a *second, distinct* white artifact nearby (not the holes):
+some terrain tiles carry vertex argb `0x..ffffff` and render **washed white on
+vk / grey on GL** (the EXTREME-ARGB case). The top-left white square by
+building 13 is this, at *near* depth (z≈0.735), not a hole — don't conflate it
+with the true far-depth apron holes.
+
+### Negative-height viewport — REFUTED (2026-07-25)
+Suspected MoltenVK's negative-viewport emulation dropped coverage. Added gated
+`MC2_VK_POSVIEWPORT` (`gameos_graphics.cpp`): Y-flip moved into the projection
+matrix + a positive-height viewport. Result: scene renders correctly (models
+upright, as the math predicts) and **the holes are unchanged** — same white
+square, same black band. The negative viewport is not the cause.
+
+### Ring-buffer aliasing — REFUTED by code (2026-07-25)
+Suspected the single per-frame vertex ring wrapped mid-frame and a later
+`memcpy` clobbered an earlier draw's verts before GPU submit. But `ringAlloc`
+(`gameos_graphics.cpp:651`) does **not** wrap: on overflow it returns NULL, drops
+the draw, and prints "draws dropped this frame" (never observed); `ring_off`
+only advances within a frame; the ring is 16 MB (a terrain frame is far under
+that). No intra-frame aliasing possible.
+
+### Caveat on the "no fragment" contradiction
+The TRACEPX-covers-but-capture-shows-no-fragment result pairs a *this-session*
+TRACEPX at gos(684,75) with a *prior-session* Metal capture at the "same" pixel.
+Pixel targeting has been unreliable (two earlier picks landed on crates / a
+washed-white tile, not holes). **To solidify:** detect a hole pixel from the
+current screenshot (largest pure-black/-white region centroid), then TRACEPX
+that exact pixel in the same run. What's solid regardless: at every sampled
+hole-region pixel, cement geometry is present, covering, and non-degenerate.
+
+### External research: the D3D→GL→VK clipping lineage (2026-07-27)
+`gos_VERTEX` (x,y,z,**rhw**) is D3D's `D3DFVF_XYZRHW` **pre-transformed** vertex
+format. Documented behavior of XYZRHW: Direct3D does **not** frustum-clip these
+verts — **only guard-band clips** them (GameDev.net; MS docs). Two Vulkan porting
+traps follow, both from this lineage:
+
+1. **Depth clip vs clamp.** Vulkan defaults to `depthClampEnable=FALSE` → depth
+   *clip* ON; D3D content assumes depth *clamp* always on. `VK_EXT_depth_clip_enable`
+   exists explicitly "for translating DX content which assumes depth clamping is
+   always enabled" (Vulkan docs). → **TESTED (MC2_VK_DEPTHCLAMP, enabling the
+   depthClamp device feature + depthClampEnable=VK_TRUE = clamp on / clip off):
+   holes UNCHANGED. REFUTED.** Consistent with `quad.cpp:1496` already CPU-culling
+   terrain depth to [0,1) — so no primitive has out-of-range NDC z to clip anyway.
+2. **XY guard-band / frustum clipping (UNTESTED).** The engine relies on D3D not
+   frustum-clipping XYZRHW verts. Terrain emits **huge** triangles far off-screen
+   (RIALOG base/detail bbox −2781..+5203 in a 2048-wide space → clip coords well
+   outside ±w). Vulkan *always* frustum-clips XY (guard band is a HW optimization,
+   not spec-controllable); GL renders them fine, MoltenVK/Metal may not. Caveat:
+   the cement batch actually covering the apron hole had a *modest* bbox
+   (586,−166)-(2236,1214), not huge — so if huge-triangle clipping is the cause,
+   the mechanism must be indirect. DXVK (D3D→Vk) hit related MoltenVK issues.
+
+Research sources logged in ENGINEERING_LOG (2026-07-27 entry).
+
+### GL-vs-vk submitted-vertex diff — DONE: geometry is identical (2026-07-27)
+Added `MC2_VERTDUMP` (shared code, `txmmgr.cpp` `renderLists()`): one-frame dump of
+every terrain vertex node's exact `gos_VERTEX` data, run on both the GL and vk
+builds at the same headless warp (`tools/vkprobe --bin …/mc2` and `…/mc2-vk`),
+then diffed.
+
+Result (128 nodes each, 108 with geometry, 12,387 verts in equal-count nodes):
+- **96.0% of verts match to <0.1 px**; 96.2% to <1 px.
+- **The huge off-screen triangles (screen x −2781..+5203) are present, identical,
+  in BOTH backends** — MoltenVK is not being handed different/degenerate geometry.
+- The 3.2% >10px diffs are **localized/clustered** (e.g. all of node 80 shifted
+  ~24px in one region near the deployed mechs) — dynamic elements captured at
+  slightly different animation frames across the two separate launches, not a
+  systematic transform difference. One node (i=115) differed by 9 verts (a single
+  frustum-edge tile), same texture.
+
+**Conclusion:** GL and MoltenVK receive the *same* clip-space geometry (this diff)
+through the *same* projection matrix + vertex shader (verified earlier). The
+cement holes are therefore **100% a MoltenVK/Metal rasterization behavior** on
+identical input — not geometry, not transforms, not state. Note the huge
+guard-band-reliant XYZRHW triangles reach Metal on both backends; GL rasterizes
+them cleanly, MoltenVK does not → consistent with the XYZRHW/guard-band research
+thread, though the specific failing cement triangle at the apron was modest-sized,
+so the exact Metal-level mechanism still needs the Metal debugger to see directly.
+
+### Validation layers, both APIs — CLEAN (2026-07-27)
+
+Ran the full headless repro under each validation layer in turn
+(`tools/vkprobe/run.sh --save 1`). Both are **clean negatives on the raster
+question**, which is itself load-bearing: the holes are not API misuse, they are
+*correct API calls producing wrong rasterization*.
+
+- **Vulkan (`VK_LAYER_KHRONOS_validation`, SDK 1.4.350.1)** — whole session, only
+  two findings, neither raster-related: `VUID-vkQueueSubmit-pSignalSemaphores-00067`
+  (swapchain binary semaphore reused before re-acquire — a real presentation-sync
+  bug worth fixing separately, see the swapchain-semaphore-reuse guide; fix is
+  per-swapchain-image semaphores or `VK_KHR_swapchain_maintenance1`) and
+  `VUID-vkDestroyDevice-device-05137` (objects still alive at teardown).
+  **Zero draw / pipeline / state errors.**
+- **Metal API validation** (`MTL_DEBUG_LAYER=1`, error+warning mode `nslog`) —
+  game ran normally to a clean quit, holes reproduced, **zero errors or
+  warnings**.
+- **Metal GPU/shader validation** (`MTL_SHADER_VALIDATION=1`) — **inconclusive**:
+  it stalls the game hard (banners print, then no frame in 60s). Not retried.
+
+Gotcha for next time: the game's stdout is block-buffered into the harness log,
+so a run that gets killed before 4 KB accumulates loses all of it. Use
+`--capture screenshot` (which lets the run quit cleanly) rather than
+`--capture log` when the session might be slow; stderr/NSLog is unbuffered and
+survives either way.
+
+### Guard-band / large-coordinate rasterization — REFUTED (2026-07-27)
+
+This was the leading hypothesis (see the external-research section above), and
+it is now dead. `MC2_VK_GUARDCLIP` (+ `MC2_VK_GUARDCLIP_MARGIN`, default 64
+game px) added to `rendervk/gameos_graphics.cpp`: a screen-space
+Sutherland-Hodgman clip of **every** triangle to the viewport rect, applied in
+`emitDraw` — the single choke point all of `gos_DrawQuads`,
+`gos_DrawTriangles` and `gos_RenderIndexedArray` funnel through. Perspective-
+correct for XYZRHW verts: `x,y,z,rhw` are screen-linear and lerp directly,
+`u,v` are interpolated as `u*rhw`/`v*rhw` and divided back (textures come out
+unskewed, confirming the clip is sound and not accidentally a no-op).
+
+It is demonstrably doing work — steady-state counters at building 13:
+
+```
+[VKDBG] GUARDCLIP margin=64 tris_in=15919764 -> out=13071386 (clipped=823038 dropped=3303964)
+```
+
+**~21% of all submitted triangles are entirely off-screen** and ~5% straddle the
+edge. After the clip *no primitive Metal sees extends beyond screen+64px* — and
+the screenshot is **pixel-for-pixel identical** to the unclipped run, including
+the sharp diagonal edge of the black band (compared by cropping the band and the
+fog-white square from both runs).
+
+That refutes it in both directions: if Metal were dropping the huge triangles,
+their clipped remnants would now cover the holes; if the huge triangles were
+mis-rasterizing *into* the holes, they no longer exist. Neither happened.
+So screen-space coordinate magnitude is not the mechanism, which also fits the
+arithmetic — peak |x| ≈ 5203 in gos space ≈ 15300 px on the 6016-wide drawable,
+comfortably inside a conventional ±32768 s15.8 guard band.
+
+**Observation worth carrying forward:** in the band crop, the black region is
+bounded by a **clean straight diagonal edge** and correctly-lit objects
+(buildings, crates, the compass rose) draw normally on top of it. A straight
+edge means the black is *rasterized primitive coverage*, not absent terrain —
+i.e. something is drawing black/fog-colored geometry there, rather than the
+pavement failing to draw. That deserves re-testing against the "no fragment"
+claim in the PROVEN section, which was inferred from depth, not from color.
+
+### Xcode Metal frame-debugger session — DRAW 495 IS THE HOLES (2026-07-27)
+
+**Write this down; it was lost between sessions once already.** Working the
+`apron_095408.gputrace` in Xcode 26.6, driven by jalance with the frame on
+screen. Frame structure: 3 command buffers, **1 render encoder**, 2 blit
+encoders, **343 draw calls**, drawable 6016×3384 BGRA8Unorm, depth
+`0x9ae444c80` Depth32Float full-size.
+
+**Xcode's own frame analysis is useless here.** Insights: Memory = 3 benign
+storage-mode suggestions, Bandwidth = none, Performance = none,
+API Usage = 618 — of which **616 are `Redundant Binding`** on the render
+encoder (MoltenVK re-pushing identical buffer bytes per draw) and 2 are
+"Unused Resource" at present. No load/store-action or correctness warnings at
+all. Don't spend another session hoping the Insights panel will help.
+
+**The find: draw call 495.** Selecting it green-outlines its own primitives,
+and the outline traces **exactly the hole regions** — the notched white polygon
+top-left and the whole black band, boundary for boundary, and nothing else.
+Two draws later the *rest* of the pavement starts tiling in normally.
+So the holes are **not** missing geometry that later draws fail to cover:
+**draw 495 draws those tiles**, in the right place, in the right shape, and
+they come out flat black / flat fog-white instead of textured.
+
+Its state: `RenderPipelineState 0x9ae4db000` (main0/main0),
+`DepthStencilState 0x9aa740d70` = **Depth {LessEqual, Write Yes}**,
+color 0 = CAMetalLayer drawable (load action Clear), vertex buffer
+`0x9ae44da0` as `vertexBuffer.0`, push constants in Buffer 8, fragment
+side has only `spvDescriptorSet0` + `pc` bound directly (textures live in
+Residency Set `0x9ab081800`, so bound-vs-sampled can't be read off the panel).
+
+**Depth-occlusion hypothesis — REFUTED at the readout's resolution.** In the
+Depth attachment, straddling the black band's edge (the R channel of a
+Depth32Float view *is* the depth) gives **0.6752 just outside vs 0.6753 just
+inside** — a tie, not an occluder. The hole fill is therefore **coplanar with
+the surrounding pavement**, which is itself the useful result: it is not a
+stray quad floating in front of the ground, it sits exactly where the ground
+tiles belong. (Caveat: a 4-decimal readout cannot resolve a last-bit LessEqual
+tie-break, so a *precision*-level depth story isn't fully excluded — but the
+gross occlusion story is.) Note this also **contradicts the older 0.99999
+depth reading** recorded in the PROVEN section; trust this measurement, it was
+taken on the final frame state with a known-good pixel as control.
+
+**CPU-side detectors re-run at building 13 (same session):**
+`BADTEX` = **0 hits** — every texture handle resolves, so the
+"unresolvable handle falls back to `SHADER_VERTEX`" path is NOT what's
+happening. `EXTREME-ARGB` = 73 hits but almost all are HUD (`z=0.000`); the
+terrain-sized ones are `tex=106 ''` (`argb=ffffffff frgb=4b000000 fogW=0.294
+count=1056`) and `tex=108 ''` (`argb=ffffffff frgb=ff000000 **fogW=1.000**
+count=417`), plus `tex=107 mc2_02.detail.tga`.
+
+**Fog is NOT inverted** — checked both fragment shaders directly.
+`shaders/gos_tex_vertex.frag` (GL) and `shaders/vk/gos_tex_vertex.frag` both do
+`c.rgb = mix(fog_color.rgb, c.rgb, FogValue)` behind the same
+`if(any fog_color component > 0)` guard, i.e. the D3D convention where
+FogValue=1 means *no* fog. So `fogW=1.000` on tex=108 means unfogged, and the
+white square is not "fully fogged terrain".
+
+**Live hypothesis when this session paused: draw 495 took the untextured
+path.** The call sites choose
+`g_render_states[gos_State_Texture] ? SHADER_TEX_VERTEX : SHADER_VERTEX`, so a
+terrain draw made while `gos_State_Texture == 0` runs `gos_vertex.frag`, which
+never samples a texture and outputs pure interpolated vertex color — flat
+black, flat white, correct tile shapes, correct depth. Crucially **both
+existing detectors are blind to it**: `EXTREME-ARGB` is gated on
+`sh == SHADER_TEX_VERTEX`, and `BADTEX` only fires on an unresolvable handle,
+not on no-handle-at-all. Test: read the generated MSL for
+`RenderPipelineState 0x9ae4db000`'s fragment function — if it contains no
+`tex1.sample(...)`, confirmed, and the bug is upstream in render-state
+management, not in MoltenVK's rasterizer at all.
+
+Checked and dead: GL uses the same sentinel (`INVALID_TEXTURE_ID = 0`,
+`rendergl/gameos_graphics.cpp:30`), so it is not simply that GL treats "no
+texture" as textured. GL does however keep a **two-tier state model** the vk
+path lacks — `renderStates_` (pending) vs `curStates_` (applied), with shader
+selection reading `renderStates_` at :1689/:1705 but `curStates_` at :2064 —
+which is where a GL-vs-vk timing divergence could plausibly live.
+
+### Remaining candidate directions
+1. Same-run TRACEPX at a screenshot-verified hole pixel (tighten the above).
+2. **GL-vs-vk submitted-vertex diff** (findings' original step 3): dump the terrain
+   vertex stream on both backends at this warp and diff — definitively settles
+   whether the geometry reaching the GPU is truly identical. GL binary can now
+   run the same headless warp (`--bin …/mc2`) once the load-hook build is deployed.
+3. Single missing-triangle inspection in the Metal debugger (needs Xcode).
+
+## The old open question (superseded by PROVEN above)
+
+A cement tile's **bounding box** covers the apron pixel (RIALOG:
+`a_s_gatecontrol.tga` z≈0.72, am=3), yet the pixel's depth is 0.99999 — so the
+tile's **actual triangles leave a gap** at that pixel. The CPU submits identical
+cement triangles to both backends with no degeneracy, yet **vk leaves gaps and GL
+does not.** That points at a **GPU-side coverage/rasterization difference** in the
+vk cement path. Unresolved candidates:
+
+- Native-resolution cracking: does GL render at 6016×3384 too, or lower? If GL is
+  lower-res, cracks/T-junctions between cement quads could be a native-res-only
+  artifact on vk. (Holes look too big for this, but unverified.)
+- A subtle per-vertex data difference reaching the GPU only on the vk ring path
+  (attribute layout / half-pixel UV / provoking vertex), despite identical CPU
+  values.
+- The leftover `am=3` (AlphaInvAlpha) on opaque pavement is anomalous but does
+  NOT by itself explain unwritten depth.
+
+## Recommended next steps
+
+1. **Per-triangle trace** (existing tooling): `MC2_VK_TRACEPX="x,y"` lists every
+   pass whose *triangles* actually cover a pixel (vs RIALOG's loose bbox). Run at
+   an apron pixel AND a black-band pixel to confirm exactly what does/doesn't
+   cover them.
+2. **GL vs vk resolution check** — cheap, decides the cracking hypothesis.
+3. If same triangles + same res: diff the actual submitted cement vertex stream
+   GL vs vk (instrument `gos_RenderIndexedArray` / `drawIndexedTris`).
+
+## Tooling & repro (all committed on this branch)
+
+- **Metal frame capture:** `METAL_CAPTURE_ENABLED=1 MC2_VK_CAPTURE_AT_SECS=<n>
+  MC2_VK_CAPTURE_FILE=<path.gputrace> ./mc2-vk …` (needs full Xcode.app to read).
+- **Per-pixel triangle trace:** `MC2_VK_DEBUG=1 MC2_VK_TRACEPX="x,y"`.
+- **Indexed-draw bbox probe:** `MC2_VK_DEBUG=1 MC2_VK_RIALOG="x,y"` (added
+  2026-07-24, `rendervk/gameos_graphics.cpp:2035`) — logs any `gos_RenderIndexedArray`
+  whose vertex bbox covers (x,y) or is degenerate.
+- **Fog bake dump:** `MC2_FOG_DEBUG=1`.
+- **CPU viewport clip:** `MC2_VK_GUARDCLIP=1` (+ `MC2_VK_GUARDCLIP_MARGIN=<px>`,
+  default 64); with `MC2_VK_DEBUG=1` it prints per-second clip counters.
+- **Validation layers:** Vulkan —
+  `VK_LAYER_PATH=$VULKAN_SDK/share/vulkan/explicit_layer.d
+  VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation VK_LOADER_LAYERS_ENABLE='*validation'`;
+  Metal API — `MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=nslog
+  MTL_DEBUG_LAYER_WARNING_MODE=nslog`. Do **not** add `MTL_SHADER_VALIDATION=1`,
+  it hangs the game.
+- **Repro:** save `~/.mechcommander2/savegame/testgame.ims` is at building 13
+  (Mission 1). Warp: launch `./mc2-vk -mission mc2_02`, wait ~20s, make frontmost,
+  `tools/devinput/sendkeys load` ×2 (8s apart), settle ~20s. Scripts in the
+  session scratchpad (`capture_run.sh`, `vkdebug_run.sh`, `rialog_run.sh`).
+- Evidence PNGs / .gputrace live under `docs/bugs/…` (gitignored; only `.md`
+  writeups here are tracked).

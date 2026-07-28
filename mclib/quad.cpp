@@ -10,6 +10,8 @@
 
 //---------------------------------------------------------------------------
 // Include Files
+#include <stdlib.h>	// getenv — MC2_CEMENT_SOLID experiment toggle
+
 #ifndef QUAD_H
 #include"quad.h"
 #endif
@@ -1503,7 +1505,15 @@ void TerrainQuad::draw (void)
 				{
 					// sebi: beware this will be drawn with alpha blending, so need to make sure that alpha is not zero, because this is a base terrain layer!
 					DWORD flags = isAlpha ? MC2_DRAWALPHA : 0;
-					if ((terrainDetailHandle == 0xffffffff) && (overlayHandle == 0xffffffff) && isCement)
+					// MC2_CEMENT_SOLID (experiment, vk cement-holes hunt): pure
+					// cement is normally the ONLY terrain drawn as a single
+					// ISCRATERS layer with no MC2_DRAWSOLID base under it — so any
+					// coverage gap in that layer shows sky/haze through (the vk
+					// "holes"). When set, route cement through the DRAWSOLID base
+					// path like every other terrain tile, so it gets the same
+					// opaque depth-filling pass. Static: read once.
+					static const bool cementSolid = getenv("MC2_CEMENT_SOLID") != NULL;
+					if ((terrainDetailHandle == 0xffffffff) && (overlayHandle == 0xffffffff) && isCement && !cementSolid)
 						mcTextureManager->addVertices(terrainHandle,gVertex,MC2_ISTERRAIN | flags | MC2_ISCRATERS);
 					else {
 						if(terrainHandle!=0)

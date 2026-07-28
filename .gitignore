@@ -28,6 +28,11 @@ Tools
 !/tools/
 !/tools/devinput/
 !/tools/devinput/**
+# ...but not the binaries swiftc builds from those sources (README has the
+# recipe); extensionless, so they need naming one by one
+/tools/devinput/sendkeys
+/tools/devinput/clickat
+/tools/devinput/mousemove
 .codelite
 *.session
 *.log
@@ -91,3 +96,9 @@ compile_commands.json
 3rdparty.zip
 # MSVC resource-compiler cache, always auto-generated
 *.aps
+# bug-hunt evidence: screenshots and frame captures of the running game, so
+# retail-derived pixels. The pixels stay out of git; tracked .md writeups under
+# docs/bugs/ (findings docs) are kept.
+docs/bugs/**
+!docs/bugs/**/
+!docs/bugs/**/*.md

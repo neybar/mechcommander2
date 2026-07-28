@@ -2279,7 +2279,14 @@ void __stdcall DoGameLogic()
 			//sebi:
             //mission->load("data" PATH_SEPARATOR "savegame" PATH_SEPARATOR "testgame.ims");
             char savegame_path[1024];
-            S_snprintf(savegame_path, sizeof(savegame_path)/sizeof(savegame_path[0]), "%s" PATH_SEPARATOR "testgame.ims", savePath);
+            // MC2_LOAD_SAVE dev hook: if set to a value containing a path
+            // separator, load that explicit .ims; otherwise (unset, or a bare
+            // token like "1") keep the historical quickload target testgame.ims.
+            const char* loadEnv = getenv("MC2_LOAD_SAVE");
+            if (loadEnv && loadEnv[0] && strpbrk(loadEnv, "/\\"))
+                S_snprintf(savegame_path, sizeof(savegame_path)/sizeof(savegame_path[0]), "%s", loadEnv);
+            else
+                S_snprintf(savegame_path, sizeof(savegame_path)/sizeof(savegame_path[0]), "%s" PATH_SEPARATOR "testgame.ims", savePath);
             mission->load(savegame_path);
 			loadInMissionSave = false;
 		}

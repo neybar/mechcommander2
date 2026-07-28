@@ -6,6 +6,208 @@ Newest entries at the top. Practice borrowed from the
 
 ---
 
+## 2026-07-27 — vk cement/pavement holes SOLVED: zero-alpha textures, not the rasterizer
+
+**Symptom.** Vulkan build only: sharp fog-white square holes and a black band in
+pavement/city-block ground near building 13 (Mission 1), sweeping as the camera
+pans. GL clean at the same spot. Open for ~a week across several sessions.
+
+**Cause.** Some retail TGAs are logically opaque but carry an **all-zero alpha
+channel**. `fillPixels` in `rendervk/gameos_graphics.cpp` forced alpha to 255 for
+`FORMAT_RGB8` sources but did a straight `memcpy` for `FORMAT_RGBA8`, so that
+zero alpha reached the GPU intact. The terrain shader computes
+`c = Color.bgra; c *= tex_color;` → `c.a = 1.0 × 0 = 0`, and the cement pads are
+drawn with `AlphaInvAlpha` (and sometimes alpha test), so `src·0 + dst·(1−0)`
+leaves the destination untouched — or the fragment is `discard`ed outright.
+**The draw rasterized perfectly and painted nothing**, and the backdrop showed
+through as "holes".
+
+**Fix.** Port the GL path's `convertIfNecessary`/`makeKindaSolid`/
+`doesLookLikeAlpha` trio (`rendergl/gameos_graphics.cpp:841-880`) to the vk
+backend as `looksLikeAlpha`/`makeKindaSolid`/`normalizeAlpha`, called at the end
+of `fillPixels`. Force-opaque any `gos_Texture_Solid` whose source had an alpha
+channel, and resolve `gos_Texture_Detect` → Alpha/Solid the same way GL does.
+Upstream's comment on `makeKindaSolid` names this exact case — "happens when
+drawing terrain, see TerrainQuad::draw() case when no detail and no overlay but
+isCement is true". alariq hit it on the GL port; our vk backend was written
+without it.
+
+**Verified and closed.** Headless screenshot at building 13: black band and
+fog-white square both gone, pavement continuous. Then a user play-test (jalance)
+— Mission 1 completed, Mission 2 started and panned around, no visible flaws at
+any of the spots he'd been tracking. The repro quicksave is kept at
+`docs/bugs/saves/` in case of regression.
+
+**How it was found, and why it took so long.** The Xcode Metal frame debugger,
+driven by hand (its MCP is no help — see the previous entry). Chain: draw 495
+(`vertexCount:66` = 11 quads) green-outlines *exactly* the hole regions → its
+vertex data is perfect (grey `0.573`, proper UVs `0.008…0.992`, unfogged, sane
+rhw) → its descriptor at offset `0xAF0` samples `Texture 0x9ae4e6a80` → that
+texture is a correct cement image reading **`R≈0.580 G 0.573 B≈0.537 A 0`**.
+
+The earlier "root-caused to MoltenVK/Metal rasterization" conclusion was
+**wrong**, and it steered several sessions into dead ends — validation layers,
+guard-band clipping, depth clamp, viewport orientation, ring aliasing. All came
+back clean because nothing was wrong at the API or rasterizer level. That
+conclusion had been reached by *elimination* ("identical geometry in, different
+pixels out") without ever confirming a mechanism. The lesson worth keeping:
+elimination is not a root cause, and what actually cracked it was inspecting a
+**sampled texel's value** — data, not state. Also worth noting the bug was
+sitting in plain sight in the GL source the whole time, with a comment
+describing it; a diff of the two backends' texture-load paths would have found
+it in an hour.
+
+## 2026-07-27 — vk cement-holes: validation layers clean, guard-band refuted
+
+Two more experiments against the cement holes, both **negative**, plus a
+correction to the plan that was carried into this session. Detail in
+`docs/bugs/2026-07-24-vk-cement-holes-FINDINGS.md`.
+
+**Validation layers, both APIs — clean.** Ran the headless repro under
+`VK_LAYER_KHRONOS_validation` and then under Metal API validation. Vulkan flagged
+exactly two things, neither raster-related: swapchain binary-semaphore reuse
+(`VUID-vkQueueSubmit-pSignalSemaphores-00067` — a genuine presentation-sync bug
+to fix separately, either per-image semaphores or `VK_KHR_swapchain_maintenance1`)
+and live objects at `vkDestroyDevice`. Metal API validation: zero errors, zero
+warnings, holes still reproduced. Metal *shader/GPU* validation is unusable here
+— it stalls the game before the first frame. Net: the holes are not API misuse
+on either side, they are correct calls producing wrong rasterization.
+
+**Guard-band / large-coordinate rasterization — refuted.** This had been the
+leading hypothesis: D3D `XYZRHW` pre-transformed terrain reaches x ∈ −2781..+5203
+in a 2048-wide space, D3D never frustum-clips those verts, and fixed-point
+rasterizer guard bands are finite. New gated hook `MC2_VK_GUARDCLIP`
+(`rendervk/gameos_graphics.cpp`) does a screen-space Sutherland-Hodgman clip of
+every triangle to the viewport in `emitDraw` — the one choke point all of
+`gos_DrawQuads`/`gos_DrawTriangles`/`gos_RenderIndexedArray` pass through.
+Perspective-correct for XYZRHW: `x,y,z,rhw` lerp directly (screen-linear),
+`u,v` go through `u*rhw`/`v*rhw` and divide back, so clipped edges don't skew.
+It drops **~21% of all triangles as fully off-screen** and clips ~5% more, so
+after it runs nothing Metal sees exceeds screen+64px — and the frame is
+**pixel-identical** to the unclipped run. Refuted in both directions.
+
+Worth carrying forward: cropping the black band shows it bounded by a **clean
+straight diagonal edge**, with buildings and crates drawing correctly on top.
+A straight edge means rasterized primitive coverage, not absent geometry — so
+"something draws black there" now looks more likely than "pavement fails to
+draw", which the earlier depth-based "no fragment" inference had implied.
+
+Also corrected a planning assumption: **Apple's Xcode MCP (`xcrun mcpbridge`)
+cannot help with this class of bug.** Its ~21-24 tools are file ops, build/test,
+diagnostics, docs search and SwiftUI previews — no Metal, GPU-capture or
+Instruments tools — and it bridges into a running Xcode with an open project,
+which a CMake tree doesn't have. Nor is there any headless `.gputrace` reader
+(`xctrace` is Instruments/timing; `GPUTools*.framework` is private and GUI-only).
+Reading a capture stays a human-in-Xcode step. Local gotcha: Xcode lives on
+`/Volumes/Media` here and `xcode-select` points at the CLT instance, so `xcrun`
+finds no Xcode tools until it's repointed.
+
+## 2026-07-27 — vk cement-holes: experiments + the D3D→GL→VK clipping research
+
+Used the new `tools/vkprobe` harness to run four gated experiments against the
+cement holes (full detail in `docs/bugs/2026-07-24-vk-cement-holes-FINDINGS.md`).
+All **refuted**: `MC2_CEMENT_SOLID` (DRAWSOLID base — made holes *worse*),
+`MC2_VK_POSVIEWPORT` (Y-flip via projection + positive viewport — unchanged),
+ring-buffer aliasing (refuted by code — `ringAlloc` can't wrap), and
+`MC2_VK_DEPTHCLAMP` (depth clamp on / clip off — unchanged).
+
+Key reframing came from **external research** (per
+[[feedback-external-research]]), which I'd neglected for several sessions:
+`gos_VERTEX` is D3D `D3DFVF_XYZRHW` **pre-transformed** verts, which Direct3D
+**never frustum-clips — guard-band only**. Two VK porting traps follow: (1) depth
+clip vs clamp — Vulkan defaults to clip, DX assumes clamp (`VK_EXT_depth_clip_enable`
+exists for exactly this) — tested and refuted (we already CPU-cull depth to
+[0,1)); (2) XY guard-band clipping of the engine's huge off-screen terrain
+triangles — untested, the leading remaining suspect. Sources: GameDev.net XYZRHW
+clipping threads, MS D3D9 transformed-vertex docs, Vulkan `VK_EXT_depth_clip_enable`
+/ `VK_EXT_depth_clamp_control` docs, MoltenVK + DXVK issue trackers. The
+`MC2_VK_DEPTHCLAMP` path also enables the `depthClamp` device feature in
+`gos_render.cpp` (harmless when the pipeline flag is off).
+
+## 2026-07-25 — Headless renderer-probe harness (`MC2_LOAD_SAVE` + `tools/vkprobe`)
+
+Not a bug fix — tooling, to stop re-deriving the same launch→warp→capture→quit
+dance by hand every bug-hunt session. The black-quad/cement-holes repro lives at
+building 13 (Mission 1), and reaching it meant `-mission mc2_02` then two synthetic
+`sendkeys load` keystrokes (ctrl+alt+shift+Z) 8s apart with the window forced
+frontmost — fragile, and it takes over the desktop *input*, so it can't run
+unattended.
+
+**Engine dev hook `MC2_LOAD_SAVE=<path|1>`** (`code/mission.cpp`,
+`code/mechcmd2.cpp`). `Mission::update()` arms a wall-clock timer on the first
+mission frame and, after `MC2_LOAD_SAVE_SECS` (default 6s), sets the existing
+`loadInMissionSave` flag — the *same* flag the quickload hotkey sets — so the
+proven `mission->load()` path runs with no keyboard input. The handler
+(`mechcmd2.cpp:2277`) resolves the env value: a value containing a path separator
+loads that explicit `.ims`; a bare token like `1` (or the hotkey with the env
+unset) keeps the historical `savePath/testgame.ims`. Wall-clock, not turn-based,
+so a script can predict when the load lands. Gated `#ifndef FINAL`, next to the
+other dev hooks.
+
+**Harness `tools/vkprobe/run.sh`.** Parameterized launch→settle→capture→clean-quit:
+`--save/--load-secs`, `--capture screenshot|gputrace|log`, `--at/--quit`, `--bin`
+(GL vs vk), `--out`. Screenshots via `screencapture -x` (game is
+full-screen-desktop, so a display grab = the game); gputrace wires
+`METAL_CAPTURE_ENABLED` + `MC2_VK_CAPTURE_AT_SECS`; passes through any `MC2_*` the
+caller exported (`MC2_VK_DEBUG`, `TRACEPX`, `RIALOG`, …). Evidence lands under
+`docs/bugs/<date>-vkprobe/` (gitignored — retail-derived pixels).
+
+Validated first run: `run.sh --save 1 --at 45` reached building 13 headlessly and
+the screenshot captured **both** cement-holes symptoms (fog-white square + the
+black band). The game still runs full-screen (covers the display ~60s), so still
+announce before running — but no synthetic input, so it no longer hijacks the
+keyboard/mouse. Note native capture resolution is 6016×3384 (Retina 2×).
+
+## 2026-07-23 — Metal frame capture on MoltenVK, for the black-quad hunt
+
+Not a bug fix — tooling. The vk-only "black/fog-colored ground quad" near the
+Mission 1 drop zone has resisted every printf-style approach: the previous
+round's `MC2_VK_TRACEPX` per-pixel draw trace depends on naming the right
+render-space pixel, and screenshot coordinates don't map to it cleanly (the
+game renders 2048x1080 while `screencapture` returns 6016x3384 at a different
+aspect, so traced pixels kept landing on the wrong terrain). The question is
+"which draw wrote *this* pixel", and that is what a GPU capture answers
+directly.
+
+mc2-vk runs Vulkan on Metal via MoltenVK, so Xcode's Metal frame debugger sees
+the real draws — per-pixel draw history, per-draw blend/depth state, bound
+textures, fragment shader debugging — with no coordinate math at all: click
+the pixel.
+
+**How it's wired:** `rendervk/gos_metal_capture.{h,mm}` (Objective-C++, built
+only on `APPLE`, no-op inline stubs elsewhere). The MTLDevice behind MoltenVK
+comes out through `VK_EXT_metal_objects` (advertised rev 2 on the M4 Pro):
+`VkExportMetalObjectCreateInfoEXT` chained into `VkDeviceCreateInfo::pNext` at
+creation, then `vkExportMetalObjectsEXT` + `VkExportMetalDeviceInfoEXT` to
+read the handle. Capturing the device covers every queue on it, so no
+command-queue export is needed. Capture brackets one frame:
+`metal_capture_frame_begin()` in `vk_begin_frame` after the acquire (past the
+last point the frame can be skipped, before any command buffer opens) and
+`metal_capture_frame_end()` at the tail of `swap_window`. The pairing is exact
+because both sites sit behind the same `frame_active` guard. `frame_end` does
+a `vkDeviceWaitIdle` first — MoltenVK's present command buffer can still be in
+flight, and stopping the capture under it truncates the trace.
+
+**Triggering:** `MC2_VK_CAPTURE_AT_SECS=<n>` captures the first frame past
+that much uptime, one per run, to `MC2_VK_CAPTURE_FILE` (default
+`/tmp/mc2-vk.gputrace`). Time-based rather than hotkey-based because the warp
+repro is already wall-clock scripted (load, sendkeys, settle), so the existing
+scripts need no changes. Requires `METAL_CAPTURE_ENABLED=1` in the
+environment; the entitlement route (`com.apple.security.get-task-allow`)
+turned out not to be necessary for a locally built binary. Nothing is enabled
+unless the env var is set — an ordinary run doesn't even request the device
+extension, so device creation is byte-identical to before.
+
+**Gotcha:** Metal will not overwrite an existing trace, and it fails at
+*stopCapture* — after the frame you wanted is already gone. Init therefore
+`stat`s the output path and refuses up front.
+
+Verified end to end: a 5s smoke capture wrote a 256 MB trace containing the
+CAMetalLayer, heaps and textures. Reading the black-quad trace in Xcode is the
+next step and is at-keyboard work.
+
+---
+
 ## 2026-07-20 — Clamp window-size requests to usable display bounds
 
 Task 9 from the credit plan. `options.cfg`'s `ResolutionX`/`ResolutionY` (read

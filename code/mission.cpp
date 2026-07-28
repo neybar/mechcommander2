@@ -10,6 +10,8 @@
 
 //----------------------------------------------------------------------------------
 // Include Files
+#include <time.h>	// MC2_LOAD_SAVE dev hook: wall-clock auto-load timing
+
 #ifndef MCLIB_H
 #include"mclib.h"
 #endif
@@ -391,7 +393,35 @@ long Mission::update (void)
 			}
 			#endif
 		}
-	
+
+		//---------------------------------------
+		// MC2_LOAD_SAVE=<path|1>: dev hook — auto-load a savegame once, a few
+		// seconds into the mission, so headless renderer probes reach a known
+		// camera position without synthetic keyboard input. Reuses the
+		// ctrl+alt+shift+Z quickload path (the flag below); the .ims path is
+		// resolved in the loadInMissionSave handler in mechcmd2.cpp. The delay
+		// (default 6s) is overridable with MC2_LOAD_SAVE_SECS. Wall-clock, not
+		// turn-based, so a probe script can predict when the load lands.
+		{
+			static const char* autoLoadEnv = getenv("MC2_LOAD_SAVE");
+			static bool autoLoadDone = false;
+			static time_t autoLoadStart = 0;
+			if (autoLoadEnv && autoLoadEnv[0] && !autoLoadDone)
+			{
+				time_t now = time(NULL);
+				if (autoLoadStart == 0)
+					autoLoadStart = now;
+				double delay = 6.0;
+				if (const char* d = getenv("MC2_LOAD_SAVE_SECS"))
+					delay = atof(d);
+				if (difftime(now, autoLoadStart) >= delay)
+				{
+					loadInMissionSave = true;
+					autoLoadDone = true;
+				}
+			}
+		}
+
 		//---------------------------------------
 		// The game believes we will drop well below par for a frame or two.
 		// put the game into slo-mo so we don't lose any frames of animation.

@@ -7,6 +7,11 @@
 #include "gameos.hpp"
 #include "gos_render.h"
 #include "vk_internal.h"
+#include "gos_metal_capture.h"
+
+#ifdef __APPLE__
+#include <vulkan/vulkan_metal.h>
+#endif
 
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_vulkan.h>
@@ -482,6 +487,31 @@ RenderContextHandle init_render_context(RenderWindowHandle render_window)
         }
     }
 
+    // Metal frame capture (macOS only, and only when asked for): reaching the
+    // MTLDevice behind MoltenVK needs VK_EXT_metal_objects enabled here, and
+    // the object types we intend to export declared up front. An ordinary run
+    // asks for nothing and creates exactly the device it always did.
+    bool metal_objects = false;
+#ifdef __APPLE__
+    VkExportMetalObjectCreateInfoEXT export_metal_dev = {};
+    if(metal_capture_requested()) {
+        for(uint32_t i = 0; i < ndevext; ++i) {
+            if(0 == strcmp(devext[i].extensionName, VK_EXT_METAL_OBJECTS_EXTENSION_NAME)) {
+                metal_objects = true;
+                break;
+            }
+        }
+        if(metal_objects) {
+            dev_exts.push_back(VK_EXT_METAL_OBJECTS_EXTENSION_NAME);
+            export_metal_dev.sType = VK_STRUCTURE_TYPE_EXPORT_METAL_OBJECT_CREATE_INFO_EXT;
+            export_metal_dev.exportObjectType = VK_EXPORT_METAL_OBJECT_TYPE_METAL_DEVICE_BIT_EXT;
+        } else {
+            fprintf(stderr, "[VKCAP] device does not advertise %s -- no capture\n",
+                    VK_EXT_METAL_OBJECTS_EXTENSION_NAME);
+        }
+    }
+#endif
+
     float prio = 1.0f;
     VkDeviceQueueCreateInfo qci = {};
     qci.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
@@ -489,15 +519,32 @@ RenderContextHandle init_render_context(RenderWindowHandle render_window)
     qci.queueCount = 1;
     qci.pQueuePriorities = &prio;
 
+    // Enable depthClamp so the pipeline can turn depth-CLIP off (clamp on),
+    // matching D3D XYZRHW pre-transformed vertices, which are never frustum/
+    // depth-clipped (guard-band only). Vulkan defaults to depth clip; enabling
+    // the feature here lets rasterization state opt into clamp (MC2_VK_DEPTHCLAMP;
+    // see gameos_graphics.cpp). Enabling the capability is harmless on its own.
+    VkPhysicalDeviceFeatures supported_feats = {};
+    vkGetPhysicalDeviceFeatures(ctx->phys_device_, &supported_feats);
+    VkPhysicalDeviceFeatures enabled_feats = {};
+    if(supported_feats.depthClamp)
+        enabled_feats.depthClamp = VK_TRUE;
+
     VkDeviceCreateInfo dci = {};
     dci.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
     dci.queueCreateInfoCount = 1;
     dci.pQueueCreateInfos = &qci;
     dci.enabledExtensionCount = (uint32_t)dev_exts.size();
     dci.ppEnabledExtensionNames = dev_exts.data();
+    dci.pEnabledFeatures = &enabled_feats;
+#ifdef __APPLE__
+    if(metal_objects)
+        dci.pNext = &export_metal_dev;
+#endif
 
     VK_CHECK(vkCreateDevice(ctx->phys_device_, &dci, NULL, &ctx->device_));
     vkGetDeviceQueue(ctx->device_, ctx->queue_family_, 0, &ctx->queue_);
+    metal_capture_init(ctx->device_, metal_objects);
 
     // render pass: color (clear -> present) + depth (clear, discard)
     VkAttachmentDescription atts[2] = {};
@@ -604,6 +651,10 @@ bool vk_begin_frame()
         return false; // skip this frame's drawing
     }
 
+    // past the point where the frame can still be skipped, and before any
+    // command buffer opens -- a Metal capture has to bracket the whole frame
+    metal_capture_frame_begin();
+
     VkCommandBufferBeginInfo bi = {};
     bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
@@ -674,6 +725,8 @@ void swap_window(RenderWindowHandle /*h*/)
     // descriptor pool) are free to reset at the next vk_begin_frame
     VK_CHECK(vkWaitForFences(ctx->device_, 1, &ctx->frame_fence_, VK_TRUE, UINT64_MAX));
     VK_CHECK(vkResetFences(ctx->device_, 1, &ctx->frame_fence_));
+
+    metal_capture_frame_end();
 
     ctx->frame_.frame_active = false;
 }
