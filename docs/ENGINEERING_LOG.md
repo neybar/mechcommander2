@@ -6,6 +6,36 @@ Newest entries at the top. Practice borrowed from the
 
 ---
 
+## 2026-07-29 — Bookkeeping: the task-4 "black quad" *was* the cement/pavement holes; checkerboard wreck dismissed
+
+Two task-4 findings closed on review, no code change.
+
+**The 2026-07-20 "recurring black quad" and the cement/pavement holes solved
+2026-07-27 are the same bug.** The hunt renamed itself mid-flight (the fix
+branch was `fix/vk-black-quad-diag`) and the finding was never marked closed in
+`CREDIT_PLAN.md`, so a later session reading the plan would have re-opened a
+solved bug. Same location (pavement/roofs near building 13, Mission 1), same
+profile: sharp-edged, world-anchored, vk-only, unaffected by every graphics
+toggle. The zero-alpha-texture cause explains both puzzles that broke the
+earlier theories: the draw **rasterized perfectly and painted nothing**, so
+whatever lay behind showed through — black where nothing was behind it,
+fog-white where the fog backdrop was, and the retracted SRM turret mechanism
+visible "through" it because nothing was ever painted over the pit. Both
+intermediate root causes recorded on 2026-07-20 (shadow blend-state, then
+terrain-lighting-goes-black) are superseded by the 2026-07-27 entry below.
+
+**The destroyed LRM truck wreck's black/white checkerboard is not a bug** —
+jalance's call on review: it's chunky low-resolution wreck art, not wrong or
+missing texture content. The 2026-07-20 entry inferred "wrong texture" from
+screenshots alone and never checked it against GL. Worth noting as a pattern:
+the checkerboard read as a placeholder texture *because* we were mid-hunt on a
+real texture-binding bug at the time.
+
+Net: task 4 has exactly **one** open finding left — the mech team-colour
+blue→red flip (finding 3).
+
+---
+
 ## 2026-07-27 — vk cement/pavement holes SOLVED: zero-alpha textures, not the rasterizer
 
 **Symptom.** Vulkan build only: sharp fog-white square holes and a black band in
@@ -326,6 +356,11 @@ code reverted; engine tree matches the original.
 
 ## 2026-07-20 — UPDATE: black quad is NOT an object/mech shadow and is not gated by any graphics option (task 4)
 
+> **CLOSED — this is the cement/pavement-holes bug, solved 2026-07-27
+> (zero-alpha textures). The negative results below are sound; the
+> "texture fails to bind / terrain lighting goes black" reframing at the
+> end is not the mechanism. See the 2026-07-27 and 2026-07-29 entries.**
+
 **Live toggle test (user-driven, vk, Mission 1) narrows the black quad
 substantially — read the two entries below for the prior investigation,
 then this.** Toggling the in-game **Shadows** and **Local Shadows** options
@@ -363,6 +398,10 @@ identified.
 ---
 
 ## 2026-07-20 — UPDATE: black quad may be a missing/failed draw, not a blend-alpha bug — see turret-pit sighting
+
+> **CLOSED — cement/pavement holes, solved 2026-07-27. The instinct here
+> was right: nothing was being painted. The cause was a zero-alpha texture,
+> not a failing cover/floor draw.**
 
 **This revises the "building shadows render fully opaque" entry below —
 read that one first, then this.** Same recurring black quad (same
@@ -428,6 +467,11 @@ considering **FABLE**, per the credit plan's task 4 escalation guidance for
 
 ## 2026-07-20 — Destroyed LRM truck wreck shows a black/white checkerboard texture on vk (task 4, open)
 
+> **CLOSED 2026-07-29 — NOT A BUG.** jalance's call on review: it's chunky
+> low-resolution wreck art, not wrong/missing texture content. The
+> "wrong/missing texture" read below was inferred from screenshots alone
+> and never checked against GL.
+
 **Symptom:** during the same task-4 playtesting session (Mission 1), the
 wreck of a destroyed LRM truck (confirmed by the user) rendered with a hard
 black-and-white checkerboard pattern covering the *entire* model, on
@@ -451,6 +495,9 @@ bug classes.
 ---
 
 ## 2026-07-20 — Building shadows render fully opaque instead of alpha-blended on vk (task 4, open)
+
+> **CLOSED — cement/pavement holes, solved 2026-07-27 (zero-alpha
+> textures). The root cause below is wrong; kept for the record.**
 
 **Superseded/revised by the entry above ("UPDATE: black quad may be a
 missing/failed draw") — a later sighting of the same quad over a turret pit

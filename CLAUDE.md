@@ -20,15 +20,18 @@ load. Resolution requests are clamped to the desktop display's bounds
 from mc2srcdata; deployment recipe in ENGINEERING_LOG — note
 `data/missions/` and `data/campaign/` must be unpacked on disk).
 
-**M2 in progress (2026-07-27): the Vulkan backend exists and is playable.**
+**M2 in progress (2026-07-29): the Vulkan backend exists and is playable.**
 Both backends build from one tree — `cmake --build build` → GL, `cmake --build
 build-vk` → Vulkan (MoltenVK). Mission 1 has been completed and Mission 2
-started on the vk build. It is **not yet at GL parity**: several rendering
-bugs remain open (see `docs/CREDIT_PLAN.md` task 4 and the
-`docs/bugs/` notes). No perf pass has been done.
+started on the vk build. Parity is close but not confirmed: of the four
+task-4 findings from Mission 1, three are closed (the black quad =
+cement/pavement holes, fixed; building glass = original-engine wart;
+checkerboard wreck = not a bug) and **one is open** — a mech's team-colour
+skin flipping blue↔red, which matches the descriptor-cache-collision class.
+Later missions haven't been swept yet. No perf pass has been done.
 
 Next up, in `docs/CREDIT_PLAN.md` order — **task 4** effects/transparency
-parity sweep (needs user playtesting, not started), **task 19** swapchain
+parity sweep (needs user playtesting; one open finding), **task 19** swapchain
 binary-semaphore reuse (a real vk sync bug the validation layer flags every
 frame), **task 3's** leftover intermittent SIGSEGV in `SoundEngine::destroy()`
 on shutdown, **task 10** clang-tidy warning audit, then **task 11** the vk

@@ -39,75 +39,53 @@ that discipline is what makes model switches cheap.
    missions on vk (free!); for anything off, GL-vs-vk screenshot pairs +
    MC2_VK_DEBUG log land in a bug note. — user + **SONNET** intake;
    **OPUS** for blend/state fixes; **FABLE** for anything that looks
-   like today's descriptor-collision class. **In progress**: first finding
-   logged 2026-07-20 (Mission 1) — a recurring black quad on vk (parking
-   pad, tower roof, wall, all same general area), reproduced 2/2 on vk,
-   absent on 1 GL run. Initial pixel-measurement work ruled out a
-   camera/rotation-relative cause (confirmed world-anchored) and pointed at
-   a blend-state bug (`MC2_ISSHADOWS` shadow draws rendering fully opaque
-   instead of ~25%-alpha, `tgl.cpp:3328`) — **but a later sighting over a
-   closed SRM turret pit showed the turret's retracted mechanism visible
-   *through* the black area**, which fits "something failing to draw/cover
-   the spot" better than "shadow rendered too opaque." Root cause is open
-   again — see ENGINEERING_LOG's "UPDATE" entry before assuming the
-   blend-state theory. `MC2_VK_DEBUG=1` on the next repro would help pin
-   down the actual draw call responsible. **OPUS** territory either way.
-   **Second finding**, same session: a destroyed
-   LRM truck wreck showed a black/white checkerboard texture on vk —
-   looks like a different bug class (wrong/missing texture content, not
-   blend state), not yet investigated. See ENGINEERING_LOG. **Third
-   finding, higher priority:** a downed mech's team-color skin flipped
-   blue→red between two screenshots taken moments apart (same mech, small
-   camera pan, no respawn) — a direct match to the 2026-07-17
-   descriptor-cache-collision bug's signature (stable wrong content,
-   flips with render/camera state). Either that fix has a gap or a
-   related cache has the same lossy-key mistake. Start here — **OPUS**
-   first since it matches an already-solved pattern, escalate to
-   **FABLE** only if it doesn't.
-   **UPDATE 2026-07-20 (live toggle + static pass):** the black quad is
-   **not** an object/mech shadow — toggling in-game Shadows/Local Shadows
-   removed mech shadows but not the quad, and no graphics option (Detail
-   Textures, High Object Detail, Non-Weapon Effects) touches it, so it's
-   **core terrain/building rendering**, not the `MC2_ISSHADOWS` path the
-   first finding assumed. Static analysis separately proved the shadow
-   blend path can't make opaque black (alpha caps at ~25%; vk blend/vertex/
-   shader/depth all match GL). Reframed as a texture-fails-to-bind /
-   terrain-lighting-goes-black case; needs a same-spot GL capture to even
-   confirm it's a vk divergence. **Fourth finding:** building glass flips
-   transparent↔opaque-dark with camera pan on vk (static building, clean
-   screenshot pair) — **rules out team-color *selection* logic as the mech
-   flip's cause** (a plain building has no team-color path yet flips too),
-   pointing the mech flip at a lower-level texture-binding or alpha-sort
-   issue. Best current repro for the flip class; investigate together. See
-   ENGINEERING_LOG for both. **Correction (deeper trace):** building
-   windows are drawn *untextured* (`addVertices(0xffffffff, …,
-   MC2_DRAWALPHA)`, `tgl.cpp:2671`), coloured by per-vertex lighting —
-   daytime windows are meant to be dark grey `0x2f2f2f` (`tgl.cpp:1763`), so
-   the *dark* state is correct and the *see-through* state is the bug. Being
-   untextured, the glass does **not** constrain the mech flip after all: mech
-   team colour is a per-instance *recoloured texture* (`setPaintScheme`,
-   `mech3d.cpp:1619`), a texture-binding path — so glass (untextured-alpha
-   compositing) and mech (texture) are **separate bugs**. **Glass
-   root-caused:** an alariq-port bug, not vk — the window pass draws
-   untextured alpha with depth-write on (`ZWrite=1`, `ZCompare=LEQUAL`,
-   `txmmgr.cpp:1404-1418`) and a port FIXME (`txmmgr.cpp:1412`, sebi 2026)
-   already describes it: the "hangar in first mission" window mesh fails the
-   depth test against the hangar shell at some angles and isn't drawn →
-   see-through. User confirmed it reproduces on GL, so it's **off the task-4
-   vk-parity list**. **Provenance CONFIRMED via a diff against the pristine
-   Microsoft 2006 shared-source** (`SimonDarksideJ/MechCommander2-Source`,
-   `Source/MCLib/txmmgr.cpp`): the original draws windows in the same
-   depth-writing alpha pass (`ZCompare=LEQUAL`, `ZWrite=1`,
-   `ms_txmmgr.cpp:796-810`) — so the root cause is **original Microsoft
-   code**, an **original-engine wart** (like task 18), *not* a port
-   regression. The port only added imperfect *mitigation* (2018 two-pass
-   split; 2026 forward→reverse iteration + FIXME). **Fix attempted 2026-07-21
-   (ZWrite=0; fixed vertex z-bias; hardware polygon offset) and REVERTED** —
-   all dead ends: the real mechanism is transparent-vs-transparent (glass
-   panes depth-reject each other), which needs back-to-front depth sorting the
-   engine doesn't do. Left as the wart; full post-mortem in ENGINEERING_LOG.
-   A proper fix = a transparency-sorting pass (its own future task, see
-   standing items).
+   like today's descriptor-collision class. **In progress** — four findings
+   from Mission 1 so far, three closed, finding 3 the only one still open:
+
+   - ~~**Finding 1 — recurring black quad (Mission 1, parking pad / tower
+     roof / wall)**~~ **CLOSED 2026-07-27: same bug as the vk cement/
+     pavement holes**, fixed by porting GL's `makeKindaSolid` into the vk
+     `fillPixels` (commit `41f81b3`, PR #7). Zero-alpha retail TGAs made the
+     draw rasterize perfectly and paint nothing — which is exactly why the
+     SRM turret's retracted mechanism was visible *through* the black area,
+     and why no graphics toggle touched it. Both intermediate theories
+     recorded here (shadow blend-state, then terrain-lighting-goes-black)
+     were wrong; see ENGINEERING_LOG 2026-07-27 and
+     `docs/bugs/2026-07-24-vk-cement-holes-FINDINGS.md`. User play-test
+     confirmed all tracked spots clean.
+   - ~~**Finding 2 — destroyed LRM truck wreck, black/white checkerboard**~~
+     **CLOSED 2026-07-29, not a bug**: user's call on review — it is just
+     low-resolution wreck art, not a wrong/missing texture. No vk/GL
+     divergence claimed; nothing to fix.
+   - **Finding 3 — downed mech's team-color skin flips blue→red**
+     between two screenshots moments apart (same mech, small camera pan,
+     no respawn). A direct match to the 2026-07-17 descriptor-cache-
+     collision signature (stable wrong content, flips with render/camera
+     state) — either that fix has a gap or a related cache has the same
+     lossy-key mistake. Mech team colour is a per-instance *recoloured
+     texture* (`setPaintScheme`, `mech3d.cpp:1619`), i.e. a texture-binding
+     path. **This is the only open task-4 finding.** — **OPUS** first
+     since it matches an already-solved pattern, escalate to **FABLE**
+     only if it doesn't.
+   - ~~**Finding 4 — building glass flips transparent↔opaque-dark with
+     camera pan**~~ **CLOSED 2026-07-21: original-engine wart, not a vk
+     parity issue.** Windows are drawn *untextured* (`addVertices(0xffffffff,
+     …, MC2_DRAWALPHA)`, `tgl.cpp:2671`) and coloured by per-vertex lighting;
+     daytime windows are meant to be dark grey `0x2f2f2f` (`tgl.cpp:1763`),
+     so the *dark* state is correct and the *see-through* state is the bug.
+     The window pass draws untextured alpha with depth-write on (`ZWrite=1`,
+     `ZCompare=LEQUAL`, `txmmgr.cpp:1404-1418`; port FIXME at
+     `txmmgr.cpp:1412`) so glass panes depth-reject each other. **Provenance
+     confirmed against the pristine Microsoft 2006 shared-source**
+     (`ms_txmmgr.cpp:796-810`, same depth-writing alpha pass) — original
+     Microsoft code, like task 18, not a port regression. Reproduces on GL;
+     user confirmed. **Fix attempted 2026-07-21 (ZWrite=0; vertex z-bias;
+     hardware polygon offset) and REVERTED** — all dead ends, the real
+     mechanism is transparent-vs-transparent, which needs back-to-front
+     sorting the engine doesn't do. A proper fix = a transparency-sorting
+     pass (its own future task, see standing items). Post-mortem in
+     ENGINEERING_LOG. Being untextured, glass never constrained the mech
+     flip in finding 3 — they are separate bugs.
 5. ~~**Solo Mission screen check**~~ DONE (2026-07-18): first test since
    M1, first-ever on vk. Full chain (list → select → briefing → mech bay
    → back → reopen, no duplication → exit) verified clean.
