@@ -117,6 +117,24 @@ change the result. Archived repro saves live in `docs/bugs/saves/`; load them
   the Generals Mac port that inspired this project): one entry per significant
   bug hunt or porting battle — symptom, cause, fix. Append entries as part of
   the work, not after the fact.
+- **Documentation is not optional and not deferrable — be hyper-vigilant.**
+  Every finding, refutation, and fix gets written down while it is fresh, by
+  the session that produced it. The docs are the only memory this project
+  has between sessions; a gap in them costs a future session real hours.
+- **Close out the docs at the END of the session that did the work, never at
+  the start of the next one.** Before a session wraps — and before handing
+  off, switching tasks, or going quiet — every finding it produced or
+  resolved must already be recorded and every status it invalidated already
+  corrected. Deferring that to "next session" is what produced PR #11: the
+  black-quad finding was fixed on 2026-07-27 but stayed listed as open with
+  two refuted theories attached, so the next session opened by re-reading a
+  solved bug as live work. A session that ends with stale docs has not
+  finished. In particular:
+  - If a hunt **renames itself** mid-flight (the black quad became "cement
+    holes"), close the original entry under its **original name** too, or
+    the next reader won't connect them.
+  - If a finding is dismissed as **not a bug**, record that verdict and who
+    made the call — an unrecorded dismissal reads as still-open.
 - **Updating the docs is part of the work, not a separate favour to ask about.**
   Ship doc changes in the same PR as the change that made them true, without
   being prompted:
