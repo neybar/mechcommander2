@@ -20,7 +20,7 @@ load. Resolution requests are clamped to the desktop display's bounds
 from mc2srcdata; deployment recipe in ENGINEERING_LOG — note
 `data/missions/` and `data/campaign/` must be unpacked on disk).
 
-**M2 in progress (2026-07-29): the Vulkan backend exists and is playable.**
+**M2 in progress (2026-07-30): the Vulkan backend exists and is playable.**
 Both backends build from one tree — `cmake --build build` → GL, `cmake --build
 build-vk` → Vulkan (MoltenVK). Mission 1 has been completed and Mission 2
 started on the vk build. Parity is close but not confirmed: of the four
@@ -30,12 +30,18 @@ checkerboard wreck = not a bug) and **one is open** — a mech's team-colour
 skin flipping blue↔red, which matches the descriptor-cache-collision class.
 Later missions haven't been swept yet. No perf pass has been done.
 
+**The vk backend now runs with zero Khronos validation errors or warnings**
+(task 19, 2026-07-30: per-swapchain-image render semaphores + a real draw-engine
+teardown). Keep it that way — a validation run is the cheapest regression check
+this port has:
+`VK_LAYER_PATH=$VULKAN_SDK/share/vulkan/explicit_layer.d
+VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation ./mc2-vk -mission mc2_02`
+
 Next up, in `docs/CREDIT_PLAN.md` order — **task 4** effects/transparency
-parity sweep (needs user playtesting; one open finding), **task 19** swapchain
-binary-semaphore reuse (a real vk sync bug the validation layer flags every
-frame), **task 3's** leftover intermittent SIGSEGV in `SoundEngine::destroy()`
-on shutdown, **task 10** clang-tidy warning audit, then **task 11** the vk
-perf pass. Pick from the plan rather than inventing an order.
+parity sweep (needs user playtesting; one open finding), **task 3's** leftover
+intermittent SIGSEGV in `SoundEngine::destroy()` on shutdown, **task 10**
+clang-tidy warning audit, then **task 11** the vk perf pass. Pick from the plan
+rather than inventing an order.
 
 GitHub remote is live: github.com/neybar/mechcommander2 (public, `main`
 branch-protected, PR required — see ENGINEERING_LOG).

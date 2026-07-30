@@ -192,7 +192,25 @@ that discipline is what makes model switches cheap.
     a header-filter/standalone-compile artifact, but glance at it so the
     advisory hook isn't silently degraded.
 
-19. **Fix swapchain binary-semaphore reuse (vk)**: the Khronos validation layer
+19. ~~**Fix swapchain binary-semaphore reuse (vk)**~~ **DONE (2026-07-30).**
+    Fixed with one render-completion semaphore per swapchain image, indexed by
+    the acquired image index (Khronos option (a); `VK_KHR_swapchain_maintenance1`
+    rejected to avoid a MoltenVK extension dependency). The
+    `VUID-vkDestroyDevice-device-05137` leak was fixed in the same pass: the vk
+    draw engine had **no teardown at all**, so ~200 objects (pipelines, shader
+    modules, samplers, layouts, descriptor pool, ring, dummy image/UBO, 40 live
+    textures) were alive at `vkDestroyDevice`. New `engineDestroy()` /
+    `graphics::vk_destroy_draw_engine()` mirrors `engineInit` in reverse.
+    **Verified: zero validation errors or warnings**, baseline-vs-fixed under
+    `VK_LAYER_KHRONOS_validation`; five clean-quit cycles, unchanged rendering,
+    GL build unaffected. Full write-up in ENGINEERING_LOG (including a trap
+    about the anonymous namespace in `gameos_graphics.cpp`). Task 3's
+    intermittent teardown SIGSEGV did **not** reproduce in those five runs, but
+    it is intermittent — this does not close task 3.
+
+    Original description follows.
+
+    The Khronos validation layer
     flags `VUID-vkQueueSubmit-pSignalSemaphores-00067` every frame — a render-
     completion semaphore is signalled again while the swapchain may still be
     using it from a prior present, because the code reuses one semaphore
@@ -210,7 +228,6 @@ that discipline is what makes model switches cheap.
     `VUID-vkDestroyDevice-device-05137` (objects still alive at teardown);
     worth cleaning up in the same pass, and it may be related to the open
     audio-teardown crash in task 3. — **OPUS** (sync/lifetime reasoning).
-    **Not started.**
 
 ### M2 perf pass
 

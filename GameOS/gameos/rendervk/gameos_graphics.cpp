@@ -489,6 +489,97 @@ bool engineInit()
     return true;
 }
 
+// Tear down everything engineInit() and the texture cache created. Reached via
+// graphics::vk_destroy_draw_engine() (defined at the end of this file), which
+// destroy_render_context() calls after vkDeviceWaitIdle and before
+// vkDestroyDevice -- without it the layer reports ~200 live child objects
+// (VUID-vkDestroyDevice-device-05137). Mirrors engineInit in reverse.
+void engineDestroy()
+{
+    graphics::VkFrame* fr = graphics::vk_frame();
+    if(!fr || fr->device == VK_NULL_HANDLE)
+        return;
+    VkDevice dev = fr->device;
+
+    // anything the last frame deferred never got its flush at vk_begin_frame
+    for(size_t i = 0; i < g_deferred_images.size(); ++i) {
+        vkDestroyImageView(dev, g_deferred_images[i].view, NULL);
+        vkDestroyImage(dev, g_deferred_images[i].image, NULL);
+        vkFreeMemory(dev, g_deferred_images[i].memory, NULL);
+    }
+    g_deferred_images.clear();
+    for(size_t i = 0; i < g_deferred_buffers.size(); ++i) {
+        vkDestroyBuffer(dev, g_deferred_buffers[i].buffer, NULL);
+        vkFreeMemory(dev, g_deferred_buffers[i].memory, NULL);
+    }
+    g_deferred_buffers.clear();
+
+    // live textures: slots are append-only and never reused, so a dead slot
+    // has already had its GPU objects nulled by deferDestroyTextureGpu
+    for(size_t i = 0; i < g_textures.size(); ++i) {
+        VkStubTexture& t = g_textures[i];
+        if(t.image_ == VK_NULL_HANDLE)
+            continue;
+        vkDestroyImageView(dev, t.view_, NULL);
+        vkDestroyImage(dev, t.image_, NULL);
+        vkFreeMemory(dev, t.memory_, NULL);
+        t.view_ = VK_NULL_HANDLE;
+        t.image_ = VK_NULL_HANDLE;
+        t.memory_ = VK_NULL_HANDLE;
+    }
+    g_textures.clear();
+
+    if(!g_eng.initialized) {
+        g_eng = VkDrawEngine();
+        return;
+    }
+
+    for(std::map<PipelineKey, VkPipeline>::iterator it = g_eng.pipelines.begin();
+        it != g_eng.pipelines.end(); ++it) {
+        vkDestroyPipeline(dev, it->second, NULL);
+    }
+    g_eng.pipelines.clear();
+
+    for(int i = 0; i < SHADER_KIND_COUNT; ++i) {
+        if(g_eng.shaders[i].vs)
+            vkDestroyShaderModule(dev, g_eng.shaders[i].vs, NULL);
+        if(g_eng.shaders[i].fs)
+            vkDestroyShaderModule(dev, g_eng.shaders[i].fs, NULL);
+    }
+
+    // destroying the pool frees every set allocated from it
+    if(g_eng.dpool)
+        vkDestroyDescriptorPool(dev, g_eng.dpool, NULL);
+    g_eng.dset_cache.clear();
+
+    if(g_eng.pipe_layout)
+        vkDestroyPipelineLayout(dev, g_eng.pipe_layout, NULL);
+    if(g_eng.dset_layout)
+        vkDestroyDescriptorSetLayout(dev, g_eng.dset_layout, NULL);
+
+    for(int i = 0; i < 4; ++i) {
+        if(g_eng.samplers[i])
+            vkDestroySampler(dev, g_eng.samplers[i], NULL);
+    }
+
+    if(g_eng.ring) {
+        vkDestroyBuffer(dev, g_eng.ring, NULL);
+        vkFreeMemory(dev, g_eng.ring_mem, NULL); // implicitly unmaps ring_ptr
+    }
+    if(g_eng.dummy_view) {
+        vkDestroyImageView(dev, g_eng.dummy_view, NULL);
+        vkDestroyImage(dev, g_eng.dummy_image, NULL);
+        vkFreeMemory(dev, g_eng.dummy_image_mem, NULL);
+    }
+    if(g_eng.dummy_ubo) {
+        vkDestroyBuffer(dev, g_eng.dummy_ubo, NULL);
+        vkFreeMemory(dev, g_eng.dummy_ubo_mem, NULL);
+    }
+
+    // reset so a re-init after a device teardown starts from a clean slate
+    g_eng = VkDrawEngine();
+}
+
 // state bits shared by every pipeline: blend, depth, cull (+ shader/topology)
 uint32_t stateBits(ShaderKind sh, TopoKind topo)
 {
@@ -1171,6 +1262,11 @@ void engineBeginFrame()
 }
 
 } // anonymous namespace
+
+namespace graphics {
+// see vk_internal.h; the work is engineDestroy() in the anonymous namespace above
+void vk_destroy_draw_engine() { engineDestroy(); }
+} // namespace graphics
 
 ////////////////////////////////////////////////////////////////////////////////
 // gosBuffer GPU backing

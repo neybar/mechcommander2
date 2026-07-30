@@ -6,6 +6,76 @@ Newest entries at the top. Practice borrowed from the
 
 ---
 
+## 2026-07-30 — vk swapchain semaphore reuse + missing draw-engine teardown (task 19): validation now clean
+
+**Symptom.** Running any mission under `VK_LAYER_KHRONOS_validation` reported two
+errors, every run: `VUID-vkQueueSubmit-pSignalSemaphores-00067` (a binary
+semaphore signalled while it may still be in use) and
+`VUID-vkDestroyDevice-device-05137` (~200 live child objects at device
+teardown). No visible misbehaviour, but both are undefined behaviour.
+
+**Cause 1 — one render-done semaphore shared by every frame.**
+`RenderContext` held a single `sem_render_done_`. `swap_window` signals it from
+`vkQueueSubmit`, `vkQueuePresentKHR` waits on it, and then the code waits on
+`frame_fence_`. That fence proves the *submit* completed — it says nothing about
+whether the *presentation engine* has consumed the semaphore. So the next
+frame's submit could signal a binary semaphore a pending present was still
+waiting on. The single-frame-in-flight design made this look safe and it is not:
+the fence and the present are separate synchronisation domains.
+
+**Fix 1.** One render-completion semaphore per swapchain image, indexed by the
+acquired image index (`sem_render_done_[cur_image_]`) — Khronos' recommended
+option (a), <https://docs.vulkan.org/guide/latest/swapchain_semaphore_reuse.html>.
+Sufficient rather than arbitrary: an image cannot be re-acquired until its
+present retires, so its semaphore is always free by the time we signal it again.
+Chose this over `VK_KHR_swapchain_maintenance1` (option b) to avoid depending on
+extension support under MoltenVK.
+
+Lifetime detail worth remembering: these semaphores belong to the **swapchain**,
+not the frame loop — destroying one while a present still waits on it is the
+same bug in reverse. They are created in `create_swapchain` immediately after
+the old swapchain is destroyed, and torn down *after* `vkDestroySwapchainKHR`
+in `destroy_render_context`. Deliberately **not** part of
+`destroy_swapchain_views`, which runs before the old swapchain is gone.
+`sem_image_available_` stays single: it is per frame-in-flight, there is exactly
+one frame in flight, and the fence does prove its wait was consumed.
+
+**Cause 2 — the vk draw engine had no teardown at all.** `engineInit` creates
+pipelines, shader modules, samplers, descriptor set/pipeline layouts, a
+descriptor pool, the 16MB host ring and the dummy image/UBO; textures allocate
+image+view+memory per slot. Nothing ever destroyed any of it. Inventory at exit
+(`VK_LAYER_DUPLICATE_MESSAGE_LIMIT=1000`): 42 `VkDeviceMemory`, 41
+`VkDescriptorSet`, 40 `VkImage`/`VkImageView`, 14 `VkPipeline`, 12
+`VkShaderModule`, 4 `VkSampler`, 2 `VkBuffer`, plus the layouts and pool.
+
+**Fix 2.** New `engineDestroy()` (anonymous namespace, `rendervk/
+gameos_graphics.cpp`) mirroring `engineInit` in reverse, exported as
+`graphics::vk_destroy_draw_engine()` and called from `destroy_render_context`
+after `vkDeviceWaitIdle` and before everything else. It also flushes the
+deferred image/buffer lists, which otherwise never get their `vk_begin_frame`
+flush on the last frame. Destroying the descriptor pool frees its 41 sets, so
+they need no separate pass.
+
+**Note for whoever adds a namespace-scoped helper to `gameos_graphics.cpp`:**
+almost the whole file sits inside an **anonymous namespace** (opens at ~219,
+closes at ~1264). Writing `namespace graphics { … }` inside it silently creates
+`(anonymous)::graphics`, which shadows the real one and makes every existing
+`graphics::vk_frame()` call in the file fail to resolve. Define the helper as a
+plain function inside the anonymous namespace and add a thin
+`namespace graphics { … }` forwarder *after* the anonymous namespace closes.
+
+**Verified.** Baseline binary vs fixed, same harness
+(`tools/vkprobe/run.sh --save 1`), both under `VK_LAYER_KHRONOS_validation`:
+baseline reports both VUIDs, fixed reports **zero validation errors or
+warnings**. Five consecutive clean-quit cycles all exited 0 with zero VUIDs —
+worth checking explicitly since teardown is where task 3's intermittent
+`SoundEngine::destroy()` SIGSEGV lives and this change adds work to that path;
+it did not reproduce in those five runs (it is intermittent, so this is not a
+claim that task 3 is fixed). Screenshots before and after the teardown change
+are identical, and the GL build still compiles.
+
+---
+
 ## 2026-07-29 — Bookkeeping: the task-4 "black quad" *was* the cement/pavement holes; checkerboard wreck dismissed
 
 Two task-4 findings closed on review, no code change.
