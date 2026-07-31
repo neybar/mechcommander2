@@ -20,7 +20,7 @@ load. Resolution requests are clamped to the desktop display's bounds
 from mc2srcdata; deployment recipe in ENGINEERING_LOG — note
 `data/missions/` and `data/campaign/` must be unpacked on disk).
 
-**M2 in progress (2026-07-29): the Vulkan backend exists and is playable.**
+**M2 in progress (2026-07-30): the Vulkan backend exists and is playable.**
 Both backends build from one tree — `cmake --build build` → GL, `cmake --build
 build-vk` → Vulkan (MoltenVK). Mission 1 has been completed and Mission 2
 started on the vk build. Parity is close but not confirmed: of the four
@@ -30,12 +30,23 @@ checkerboard wreck = not a bug) and **one is open** — a mech's team-colour
 skin flipping blue↔red, which matches the descriptor-cache-collision class.
 Later missions haven't been swept yet. No perf pass has been done.
 
+**The vk backend now runs with zero Khronos validation errors or warnings**
+(task 19, 2026-07-30: per-swapchain-image render semaphores + a real draw-engine
+teardown). Keep it that way — a validation run is the cheapest regression check
+this port has (`MC2_AUTOQUIT_SECS` matters — without it this is a fullscreen run
+that never exits):
+`VK_LAYER_PATH=$VULKAN_SDK/share/vulkan/explicit_layer.d
+VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation MC2_AUTOQUIT_SECS=25
+./mc2-vk -mission mc2_02`
+One caveat it does *not* cover: destroying present-wait semaphores is
+unspecified in core Vulkan and the layer only checks it under
+`swapchain_maintenance1` — see `docs/bugs/2026-07-30-present-semaphore-destroy-unspecified.md`.
+
 Next up, in `docs/CREDIT_PLAN.md` order — **task 4** effects/transparency
-parity sweep (needs user playtesting; one open finding), **task 19** swapchain
-binary-semaphore reuse (a real vk sync bug the validation layer flags every
-frame), **task 3's** leftover intermittent SIGSEGV in `SoundEngine::destroy()`
-on shutdown, **task 10** clang-tidy warning audit, then **task 11** the vk
-perf pass. Pick from the plan rather than inventing an order.
+parity sweep (needs user playtesting; one open finding), **task 3's** leftover
+intermittent SIGSEGV in `SoundEngine::destroy()` on shutdown, **task 10**
+clang-tidy warning audit, then **task 11** the vk perf pass. Pick from the plan
+rather than inventing an order.
 
 GitHub remote is live: github.com/neybar/mechcommander2 (public, `main`
 branch-protected, PR required — see ENGINEERING_LOG).
@@ -153,6 +164,18 @@ change the result. Archived repro saves live in `docs/bugs/saves/`; load them
     more than no conclusion — see the 2026-07-27 pavement-holes entry.
 - Prefer minimal diffs against the vendored base code; keep our changes
   separable from upstream's so provenance stays clear.
+- **Project-local agents** live in `.claude/agents/` (both read-only — they
+  report, you apply):
+  - `mc2-review` (Opus) — checks a diff against this port's own hazard classes:
+    LP64/ARM64 truncation, non-virtual dispatch, GL-vs-vk divergence, vk object
+    lifetime, wart-vs-regression provenance, asset/licensing leaks, doc
+    close-out. Deliberately does **not** re-report clang-tidy findings (the
+    pre-push hook covers those) or open the task-10 backlog. Use on
+    engine/renderer diffs before asking for review.
+  - `mc2-docs` (Sonnet) — audits docs for drift: claims that no longer match the
+    code, drifted `file:line` citations, the dev-hook table vs actual
+    `getenv("MC2_*")` calls, cross-file disagreement, and superseded conclusions
+    still worded as live. Use before opening a PR and at session close-out.
 
 ## Build
 

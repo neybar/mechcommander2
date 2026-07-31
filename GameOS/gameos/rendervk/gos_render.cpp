@@ -68,7 +68,9 @@ struct RenderContext {
     VkCommandBuffer  draw_cb_;
     VkCommandBuffer  upload_cb_;
     VkSemaphore      sem_image_available_;
-    VkSemaphore      sem_render_done_;
+    // One render-completion semaphore per swapchain image, indexed by the
+    // acquired image index -- not one shared semaphore. See swap_window().
+    std::vector<VkSemaphore> sem_render_done_;
     VkFence          frame_fence_;
 
     uint32_t         cur_image_;
@@ -252,6 +254,17 @@ bool get_display_mode_by_index(int display_index, int mode_index, int* width, in
 
 ////////////////////////////////////////////////////////////////////////////////
 
+// Render-completion semaphores belong to the swapchain, not the frame loop, so
+// this is deliberately not part of destroy_swapchain_views(): callers must have
+// destroyed the swapchain that presented with them first. That is necessary but
+// not provably sufficient in core Vulkan -- see the caveat in create_swapchain.
+static void destroy_render_done_semaphores(RenderContext* ctx)
+{
+    for(size_t i = 0; i < ctx->sem_render_done_.size(); ++i)
+        vkDestroySemaphore(ctx->device_, ctx->sem_render_done_[i], NULL);
+    ctx->sem_render_done_.clear();
+}
+
 static void destroy_swapchain_views(RenderContext* ctx)
 {
     for(size_t i = 0; i < ctx->framebuffers_.size(); ++i)
@@ -329,6 +342,23 @@ static void create_swapchain(RenderContext* ctx)
     vkGetSwapchainImagesKHR(ctx->device_, ctx->swapchain_, &nimages, NULL);
     ctx->swapchain_images_.resize(nimages);
     vkGetSwapchainImagesKHR(ctx->device_, ctx->swapchain_, &nimages, ctx->swapchain_images_.data());
+
+    // One render-completion semaphore per image, recreated with the swapchain.
+    //
+    // Caveat, deliberately not glossed: core Vulkan gives no way to know when
+    // a present has finished waiting on a semaphore, so destroying these is
+    // strictly unspecified without VK_KHR_swapchain_maintenance1's present
+    // fence (Khronos Vulkan-Docs #2007). What we have is the best available
+    // approximation -- the only path here runs vkDeviceWaitIdle first, and
+    // MoltenVK drains presents on the same queue, so it holds on macOS. It is
+    // a portability risk for the Linux/Windows builds, not a guarantee:
+    // docs/bugs/2026-07-30-present-semaphore-destroy-unspecified.md
+    destroy_render_done_semaphores(ctx);
+    ctx->sem_render_done_.resize(nimages);
+    VkSemaphoreCreateInfo rdsemci = {};
+    rdsemci.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+    for(uint32_t i = 0; i < nimages; ++i)
+        VK_CHECK(vkCreateSemaphore(ctx->device_, &rdsemci, NULL, &ctx->sem_render_done_[i]));
 
     // depth buffer
     VkImageCreateInfo di = {};
@@ -594,10 +624,13 @@ RenderContextHandle init_render_context(RenderWindowHandle render_window)
     VK_CHECK(vkAllocateCommandBuffers(ctx->device_, &cbi, &ctx->draw_cb_));
     VK_CHECK(vkAllocateCommandBuffers(ctx->device_, &cbi, &ctx->upload_cb_));
 
+    // Acquire semaphore is per frame-in-flight, and there is exactly one frame
+    // in flight (swap_window fences at the end of every frame), so one is
+    // enough. The render-done semaphores are per swapchain image and are
+    // created with the swapchain instead -- see create_swapchain().
     VkSemaphoreCreateInfo semci = {};
     semci.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
     VK_CHECK(vkCreateSemaphore(ctx->device_, &semci, NULL, &ctx->sem_image_available_));
-    VK_CHECK(vkCreateSemaphore(ctx->device_, &semci, NULL, &ctx->sem_render_done_));
 
     VkFenceCreateInfo fci = {};
     fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
@@ -686,6 +719,15 @@ void swap_window(RenderWindowHandle /*h*/)
     VK_CHECK(vkEndCommandBuffer(ctx->draw_cb_));
     VK_CHECK(vkEndCommandBuffer(ctx->upload_cb_));
 
+    // Signal the semaphore that belongs to the image we are about to present.
+    // A binary semaphore may not be signalled again while a previous present
+    // is still waiting on it, and waiting on frame_fence_ below does *not*
+    // prove the presentation engine has consumed it -- that is what
+    // VUID-vkQueueSubmit-pSignalSemaphores-00067 flagged when one shared
+    // semaphore was used for every frame. Indexing by the acquired image is
+    // sufficient: the image cannot be re-acquired until its present retires.
+    VkSemaphore render_done = ctx->sem_render_done_[ctx->cur_image_];
+
     VkCommandBuffer cbs[2] = { ctx->upload_cb_, ctx->draw_cb_ };
     VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
     VkSubmitInfo si = {};
@@ -696,13 +738,13 @@ void swap_window(RenderWindowHandle /*h*/)
     si.commandBufferCount = 2;
     si.pCommandBuffers = cbs;
     si.signalSemaphoreCount = 1;
-    si.pSignalSemaphores = &ctx->sem_render_done_;
+    si.pSignalSemaphores = &render_done;
     VK_CHECK(vkQueueSubmit(ctx->queue_, 1, &si, ctx->frame_fence_));
 
     VkPresentInfoKHR pi = {};
     pi.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
     pi.waitSemaphoreCount = 1;
-    pi.pWaitSemaphores = &ctx->sem_render_done_;
+    pi.pWaitSemaphores = &render_done;
     pi.swapchainCount = 1;
     pi.pSwapchains = &ctx->swapchain_;
     pi.pImageIndices = &ctx->cur_image_;
@@ -726,13 +768,17 @@ void destroy_render_context(RenderContextHandle rc_handle)
     if(!ctx)
         return;
     vkDeviceWaitIdle(ctx->device_);
+    // pipelines/textures/samplers/pool must go before the device that owns them
+    vk_destroy_draw_engine();
     destroy_swapchain_views(ctx);
     vkDestroyFence(ctx->device_, ctx->frame_fence_, NULL);
-    vkDestroySemaphore(ctx->device_, ctx->sem_render_done_, NULL);
     vkDestroySemaphore(ctx->device_, ctx->sem_image_available_, NULL);
     vkDestroyCommandPool(ctx->device_, ctx->cmd_pool_, NULL);
     vkDestroyRenderPass(ctx->device_, ctx->render_pass_, NULL);
     vkDestroySwapchainKHR(ctx->device_, ctx->swapchain_, NULL);
+    // after the swapchain, which is the closest core Vulkan gets to retiring a
+    // pending present's semaphore wait -- see the caveat in create_swapchain
+    destroy_render_done_semaphores(ctx);
     vkDestroyDevice(ctx->device_, NULL);
     vkDestroySurfaceKHR(ctx->instance_, ctx->surface_, NULL);
     vkDestroyInstance(ctx->instance_, NULL);

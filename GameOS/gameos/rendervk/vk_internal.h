@@ -29,6 +29,10 @@ bool vk_begin_frame();
 
 uint32_t vk_find_memory_type(uint32_t type_bits, VkMemoryPropertyFlags props);
 
+// Destroy pipelines, shaders, samplers, descriptor pool, ring and every live
+// texture. Must run before vkDestroyDevice; defined in gameos_graphics.cpp.
+void vk_destroy_draw_engine();
+
 } // namespace graphics
 
 #endif // VK_INTERNAL_H

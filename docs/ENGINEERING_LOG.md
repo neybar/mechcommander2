@@ -6,6 +6,108 @@ Newest entries at the top. Practice borrowed from the
 
 ---
 
+## 2026-07-30 — vk swapchain semaphore reuse + missing draw-engine teardown (task 19): validation now clean
+
+**Symptom.** Running any mission under `VK_LAYER_KHRONOS_validation` reported two
+errors, every run: `VUID-vkQueueSubmit-pSignalSemaphores-00067` (a binary
+semaphore signalled while it may still be in use) and
+`VUID-vkDestroyDevice-device-05137` (~200 live child objects at device
+teardown). No visible misbehaviour, but both are undefined behaviour.
+
+**Cause 1 — one render-done semaphore shared by every frame.**
+`RenderContext` held a single `sem_render_done_`. `swap_window` signals it from
+`vkQueueSubmit`, `vkQueuePresentKHR` waits on it, and then the code waits on
+`frame_fence_`. That fence proves the *submit* completed — it says nothing about
+whether the *presentation engine* has consumed the semaphore. So the next
+frame's submit could signal a binary semaphore a pending present was still
+waiting on. The single-frame-in-flight design made this look safe and it is not:
+the fence and the present are separate synchronisation domains.
+
+**Fix 1.** One render-completion semaphore per swapchain image, indexed by the
+acquired image index (`sem_render_done_[cur_image_]`) — Khronos' recommended
+option (a), <https://docs.vulkan.org/guide/latest/swapchain_semaphore_reuse.html>.
+Sufficient rather than arbitrary: an image cannot be re-acquired until its
+present retires, so its semaphore is always free by the time we signal it again.
+Chose this over `VK_KHR_swapchain_maintenance1` (option b) to avoid depending on
+extension support under MoltenVK.
+
+Lifetime detail worth remembering: these semaphores belong to the **swapchain**,
+not the frame loop — destroying one while a present still waits on it is the
+same bug in reverse. They are created in `create_swapchain` immediately after
+the old swapchain is destroyed, and torn down *after* `vkDestroySwapchainKHR`
+in `destroy_render_context`. Deliberately **not** part of
+`destroy_swapchain_views`, which runs before the old swapchain is gone.
+`sem_image_available_` stays single: it is per frame-in-flight, there is exactly
+one frame in flight, and the fence does prove its wait was consumed.
+
+**Correction, same day (review catch):** the first version of this entry, and
+the code comments with it, said destroying the old swapchain "retires any
+present still holding the previous semaphores." **That is not a Vulkan
+guarantee and should not have been written as one.** Core Vulkan gives no way
+to know when a presentation engine has finished waiting on a semaphore —
+Vulkan-Docs #2007 says so explicitly, and neither `vkDeviceWaitIdle` nor
+`vkQueueWaitIdle` covers a pending present; only
+`VK_KHR/EXT_swapchain_maintenance1`'s present fence specifies it. What the code
+does is the best approximation available without that extension (the recreate
+path device-waits first, and MoltenVK drains presents on the same queue), which
+holds on macOS and is a **portability risk for M3's Linux/Windows builds**.
+Logged as `docs/bugs/2026-07-30-present-semaphore-destroy-unspecified.md`.
+Note the zero-VUID result does **not** vindicate the original wording: the
+validation layer only checks present-semaphore destruction when
+`swapchain_maintenance1` is enabled.
+
+**Cause 2 — the vk draw engine had no teardown at all.** `engineInit` creates
+pipelines, shader modules, samplers, descriptor set/pipeline layouts, a
+descriptor pool, the 16MB host ring and the dummy image/UBO; textures allocate
+image+view+memory per slot. Nothing ever destroyed any of it. Inventory at exit
+(`VK_LAYER_DUPLICATE_MESSAGE_LIMIT=1000`): 42 `VkDeviceMemory`, 41
+`VkDescriptorSet`, 40 `VkImage`/`VkImageView`, 14 `VkPipeline`, 12
+`VkShaderModule`, 4 `VkSampler`, 2 `VkBuffer`, plus the layouts and pool.
+
+**Fix 2.** New `engineDestroy()` (anonymous namespace, `rendervk/
+gameos_graphics.cpp`) mirroring `engineInit` in reverse, exported as
+`graphics::vk_destroy_draw_engine()` and called from `destroy_render_context`
+after `vkDeviceWaitIdle` and before everything else. It also flushes the
+deferred image/buffer lists, which otherwise never get their `vk_begin_frame`
+flush on the last frame. Destroying the descriptor pool frees its 41 sets, so
+they need no separate pass.
+
+The first version had an `if(!g_eng.initialized) return` shortcut, which the
+review caught as reintroducing the very VUID it closes: `engineInit` sets
+`init_failed` and bails *after* creating some of the 12 shader modules (a stale
+or missing `.spv` in the deploy dir is enough), and the shortcut skipped the
+shader-destroy loop. Removed — every step is handle-guarded or iterates a
+container that is empty when init never ran, so one uniform path is correct
+whether init succeeded, failed halfway, or never started. General lesson:
+an early-out keyed on a "fully initialised" flag is the wrong shape for a
+teardown, because partial initialisation is exactly when teardown matters.
+
+Not covered, deliberately: gosBuffers still alive at shutdown aren't reachable
+from `engineDestroy`, so the zero-leak result depends on the game destroying
+its own buffers (txmmgr's light/scene UBOs, tgl's vertex/index buffers) before
+`gos_DestroyRenderer` runs last in `TerminateGameEngine`. True today, enforced
+by nothing; noted in a comment at the call site.
+
+**Note for whoever adds a namespace-scoped helper to `gameos_graphics.cpp`:**
+almost the whole file sits inside an **anonymous namespace** (opens at ~219,
+closes at ~1264). Writing `namespace graphics { … }` inside it silently creates
+`(anonymous)::graphics`, which shadows the real one and makes every existing
+`graphics::vk_frame()` call in the file fail to resolve. Define the helper as a
+plain function inside the anonymous namespace and add a thin
+`namespace graphics { … }` forwarder *after* the anonymous namespace closes.
+
+**Verified.** Baseline binary vs fixed, same harness
+(`tools/vkprobe/run.sh --save 1`), both under `VK_LAYER_KHRONOS_validation`:
+baseline reports both VUIDs, fixed reports **zero validation errors or
+warnings**. Five consecutive clean-quit cycles all exited 0 with zero VUIDs —
+worth checking explicitly since teardown is where task 3's intermittent
+`SoundEngine::destroy()` SIGSEGV lives and this change adds work to that path;
+it did not reproduce in those five runs (it is intermittent, so this is not a
+claim that task 3 is fixed). Screenshots before and after the teardown change
+are identical, and the GL build still compiles.
+
+---
+
 ## 2026-07-29 — Bookkeeping: the task-4 "black quad" *was* the cement/pavement holes; checkerboard wreck dismissed
 
 Two task-4 findings closed on review, no code change.
@@ -675,7 +777,9 @@ On this port `MessageBoxA` is stubbed to a `printf` that always `return 0`
 (`GameOS/src/platform_winuser.cpp:34-38`) — never equal to `IDCANCEL` — so the
 loop never exits: it spams `MSGBOX: ...` to stdout forever with no way to quit
 except killing the process. `Environment.checkCDForFiles = false`
-(`code/mechcmd2.cpp:2689`) would skip the whole retry path and return a normal
+(search `code/mechcmd2.cpp` for `checkCDForFiles`; it is set to `true` there —
+cited as :2689 when this was written, since drifted to :2701 and then :2708,
+hence the symbol) would skip the whole retry path and return a normal
 "not found" error instead; that's the likely fix whenever someone picks this
 up, plus checking whether legitimate legacy CD-swap use cases still need the
 retry loop at all on this port.

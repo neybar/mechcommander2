@@ -10,10 +10,10 @@ brew install cmake sdl2 sdl2_mixer sdl2_ttf glew
 
 Notes:
 - `sdl2` installs `sdl2-compat` (the SDL2 API over SDL3) on current Homebrew — that's fine.
-- zlib and OpenGL come from the macOS SDK. OpenGL is deprecated-but-present;
-  the Vulkan/MoltenVK renderer is milestone M2 (see docs/ROADMAP.md).
+- zlib and OpenGL come from the macOS SDK. OpenGL is deprecated-but-present,
+  which is why the Vulkan backend exists — see below.
 
-Build:
+Build (OpenGL, the default backend):
 
 ```sh
 cmake -B build
@@ -22,6 +22,48 @@ cmake --build build -j8
 
 Produces `build/mc2` (arm64 Mach-O), plus the `viewer` and asset tools
 (`makefst`, `makersp`, `pak`).
+
+### Vulkan / MoltenVK
+
+The Vulkan backend is playable (M2 — see `CLAUDE.md` for exactly how far along
+it is). Both backends build from the same tree; `MC2_RENDERER` picks which
+`GameOS/gameos/render*/` implementation is compiled in. Everything above the
+`gos_*` API is backend-agnostic.
+
+```sh
+brew install molten-vk vulkan-headers vulkan-loader
+cmake -B build-vk -DMC2_RENDERER=VULKAN
+cmake --build build-vk -j8
+```
+
+Both configurations produce an executable named `mc2`, so keep them in separate
+build dirs. The convention in this project is to deploy the Vulkan one as
+`mc2-vk` alongside the GL `mc2` in the game directory, which is what the docs,
+`tools/vkprobe/run.sh` and the engineering log all assume:
+
+```sh
+cp build-vk/mc2 ~/Games/mc2-port/mc2-vk
+```
+
+Shaders are **pre-compiled SPIR-V checked into the repo** (`shaders/vk/*.spv`,
+built from the GLSL beside them with `glslc`); there is no shader compile step
+in CMake. The game loads them as `shaders/vk/<name>.spv` **relative to its
+working directory**, so `shaders/` has to be present in the game dir next to
+`data/`. A stale or missing `.spv` there makes the renderer fail to initialise
+and draws become no-ops.
+
+To check a Vulkan change against the Khronos validation layer — the backend is
+expected to run with **zero** errors or warnings, so any output is a regression:
+
+```sh
+cd ~/Games/mc2-port
+VK_LAYER_PATH=$VULKAN_SDK/share/vulkan/explicit_layer.d \
+  VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation \
+  MC2_AUTOQUIT_SECS=25 ./mc2-vk -mission mc2_01
+```
+
+(`MC2_AUTOQUIT_SECS` matters — without it that's a fullscreen run with no way
+out. See `CLAUDE.md` for the full dev-hook table.)
 
 Running the game needs user-provided assets (retail install or the
 shared-source data set) — see docs/PROJECT_BRIEF.md. By default mc2 looks
