@@ -1,5 +1,12 @@
 # Renderer Abstraction Audit (M2, step 1)
 
+> **Point-in-time snapshot from the M2 kickoff (2026-07-17), kept for its
+> conclusion, not as a live reference.** Its architectural answer held up — the
+> Vulkan backend did plug in behind `gos_*` with no new abstraction layer — but
+> it was written *before* the backend split, and its `file:line` citations have
+> drifted repeatedly since (`rendervk/` has been rewritten in places). Don't
+> chase the numbers: grep for the symbol. Current state lives in `CLAUDE.md`.
+
 *2026-07-17. Question: where does a Vulkan backend plug in? Answer: behind the
 existing `gos_*` API — no new abstraction layer is needed. The OpenGL
 implementation is already isolated in five files (~5.5K lines) under
