@@ -6,6 +6,70 @@ Newest entries at the top. Practice borrowed from the
 
 ---
 
+## 2026-07-30 — Task 18 shadows: the double-yaw hypothesis is REFUTED; it's original-engine shadow quality
+
+**Supersedes the root-cause hypothesis in the 2026-07-20 entry "Mech shadows
+swing wildly with small heading changes" — that entry's mechanism is wrong.
+Do not implement the fix it proposes.**
+
+**What prompted this.** jalance play-compared GL vs vk for task 18 and called it:
+shadows look equally bad on both, no DX build available to compare against, and
+the symptom reads as generally poor shadowing rather than a specific defect.
+Timeboxed code read to check whether anything obvious was behind it.
+
+**The refutation.** The 2026-07-20 entry claimed `RotateLight(s_lightDir,
+rotation)` (`tgl.cpp`, in `TG_Shape::MultiTransformShadows`) double-applies the
+mech's yaw, because the vertices are already in world space. That premise is
+false: **`s_lightDir` is in shape space, not world space.**
+
+- `TG_MultiShape::TransformMultiShape` (`msl.cpp`, the `TG_LIGHT_INFINITE` case)
+  builds `s_lightToShape = lightToWorld × worldToShape`, then takes
+  `GetLocalForwardInWorld` into `s_lightDir`; `s_rootLightDir` copies it for the
+  root node (`parentNode == NULL`). Composing with `worldToShape` is what puts
+  the direction in shape space.
+- `worldToShape` is `Invert(shapeToWorld)`, so its yaw component is R(−yaw).
+- `RotateLight` (`mathfunc.cpp`) applies `x' = x·cos + z·sin; z' = z·cos − x·sin`,
+  i.e. R(+yaw) about Y.
+- `Matrix4D::BuildRotation(const EulerAngles&)` (`stuff/matrix.cpp`) with
+  pitch = roll = 0 produces that same rotation under Stuff's row-vector
+  convention — the handedness and sign match, they are not merely similar.
+
+So the `RotateLight` call is the **correct inverse** of the yaw baked into
+`worldToShape`: it returns the shape-space light to world space so it matches the
+world-space vertices from `s2w`. Removing it — the 2026-07-20 suggestion — would
+*introduce* a yaw-coupled shadow bug, not fix one. The commented-out
+`RotateLight(..., -angles.yaw)` lines in `TransformMultiShape` are consistent
+with this: re-enabling them would over-rotate, which is presumably why they are
+commented out.
+
+**What is actually weak in this shadow path** (observed, not chased):
+
+1. **Only yaw is ever undone; pitch and roll are not.** `worldToShape` carries
+   all three, but `RotateLight` rotates x/z and leaves `y` untouched. The
+   projection divides by that `y` (`zFactor = up.y / s_lightDir.y`), so a
+   shape-space-contaminated `lightDir.y` scales shadow *length* — and with a
+   low sun, `zFactor` is hypersensitive to it. This fits "swings and rescales"
+   far better than a yaw error would; a yaw error rotates a shadow, it doesn't
+   rescale it.
+2. **`shadowOrigin` in `TransformMultiShape` is dead code.** It is built
+   pitch-only with yaw explicitly zeroed
+   (`BuildRotation(EulerAngles(-angles.pitch,0,0))`), given a translation, and
+   then never read. Together with the commented-out yaw lines it looks like an
+   abandoned Microsoft attempt at exactly the pitch handling missing in (1).
+3. **The projection assumes flat ground at the unit's own elevation**
+   (`up.y -= pos->y`, with the in-code comment "this assumes terrain is FLAT and
+   at zero elevation"). On any slope the shadow is wrong by construction.
+
+**Verdict: original-engine shadow quality, not a port regression, not fixed.**
+Reproduces identically on GL and vk (jalance, play comparison) and the code
+predates the alariq port (`git blame`, MS shared-source commit `63e58e9`). Per
+the standing rule on original-engine warts, a behavioural change here would be a
+mod or an opt-in option and is jalance's call. A real fix is a shadow-projection
+rewrite (terrain-aware ground plane + full light-space transform), not a
+one-liner — it is not parity work and should not be smuggled into the port.
+
+---
+
 ## 2026-07-30 — vk swapchain semaphore reuse + missing draw-engine teardown (task 19): validation now clean
 
 **Symptom.** Running any mission under `VK_LAYER_KHRONOS_validation` reported two
@@ -660,6 +724,15 @@ still **OPUS** work per the credit plan.
 ---
 
 ## 2026-07-20 — Mech shadows swing wildly with small heading changes (investigated, not fixed)
+
+> **HYPOTHESIS REFUTED 2026-07-30 — see the entry of that date at the top of
+> this log. `s_lightDir` is in *shape* space, so `RotateLight(s_lightDir,
+> rotation)` is the correct inverse of the yaw in `worldToShape`, not a second
+> application of it. Do NOT implement the fix proposed below; removing that call
+> would introduce the very bug it was thought to cause. The symptom is real but
+> is original-engine shadow quality (flat-ground projection, pitch never undone),
+> confirmed equally bad on GL and vk. The `git blame` provenance note below
+> still stands.**
 
 **Symptom:** playtesting Training 1, unit shadows appear to swing/rescale
 dramatically with the smallest mech movement — as if the "sun" were a point
