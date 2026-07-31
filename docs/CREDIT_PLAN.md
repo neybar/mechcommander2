@@ -285,18 +285,31 @@ merge; ignore ordering.
 
 ### Bugs found during playtesting
 
-18. **Mech shadows swing wildly with small heading changes**: found during
-    task 4 playtesting (Training 1), but reproduces on both GL and VK, so
-    it's not a VK-parity issue — original-engine behavior (predates the
-    alariq port per `git blame`), not a porting regression. Root-cause
-    hypothesis already written up in ENGINEERING_LOG 2026-07-20: the sun's
-    light direction gets rotated by the mech's own yaw a second time in
-    `TG_Shape::MultiTransformShadows` (`mclib/tgl.cpp:2910`), on top of the
-    vertex already being fully transformed to world space — coupling shadow
-    angle to mech heading instead of a fixed world sun direction. Not
-    started. — **OPUS** (rendering-math correctness call; confirm the
-    hypothesis before touching the fix, and check it doesn't collide with
-    the separate `TG_LIGHT_TERRAIN` rotation at `tgl.cpp:2027`).
+18. ~~**Mech shadows swing wildly with small heading changes**~~ **CLOSED
+    2026-07-30 — original-engine shadow quality, wontfix as a port task.**
+    jalance play-compared GL vs vk and found shadows equally bad on both
+    (no DX build available to compare against); his call is that the engine's
+    shadowing is simply poor rather than defective in our port.
+
+    **The 2026-07-20 double-yaw hypothesis was refuted** on a timeboxed code
+    read the same day — `s_lightDir` is in *shape* space, so
+    `RotateLight(s_lightDir, rotation)` in `TG_Shape::MultiTransformShadows`
+    is the correct inverse of the yaw in `worldToShape`, and its sign matches
+    Stuff's `BuildRotation` under the row-vector convention. **Removing that
+    call, as the old entry proposed, would introduce a yaw-coupled shadow bug
+    rather than fix one.** Full argument in ENGINEERING_LOG 2026-07-30; the
+    2026-07-20 entry is annotated as superseded.
+
+    Real weaknesses found and *not* pursued: `RotateLight` undoes yaw but never
+    pitch/roll, leaving `lightDir.y` contaminated in the `zFactor = up.y /
+    s_lightDir.y` length term (a much better fit for "swings and rescales");
+    `shadowOrigin` in `TG_MultiShape::TransformMultiShape` is built pitch-only
+    and never used (dead code, likely an abandoned MS attempt at that same
+    pitch handling); and the projection assumes flat ground at the unit's own
+    elevation, so slopes are wrong by construction. A genuine fix is a
+    shadow-projection rewrite, not a one-liner — if it ever happens it belongs
+    in the mod/option bucket per the original-engine-wart rule, at jalance's
+    discretion, not in parity work.
 
 ### Standing FABLE-only items
 
