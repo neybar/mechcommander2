@@ -116,8 +116,12 @@ Linux/Windows. ARM64 macOS adds:
   pointing users at?
 - OQ-3: What GL version/extensions does the port actually require vs what
   macOS 4.1 core provides?
-- OQ-4: Shader story for the Vulkan port — hand-written GLSL→SPIR-V, or adopt
-  the existing shaders with minimal translation?
+- ~~OQ-4~~ RESOLVED (M2, in use since the vk backend became playable): the
+  existing GL shaders were ported to Vulkan-GLSL with minimal translation, not
+  rewritten. They live in `shaders/vk/` (with `common.glsl`/`lighting.glsl`/
+  `scene.glsl` includes), are compiled to SPIR-V offline with `glslc`, and the
+  `.spv` are checked in — there is no shader build step in CMake. The engine
+  loads them as `shaders/vk/<name>.spv` relative to its working directory.
 - OQ-5: Audio backend state — how incomplete is upstream's sound system, and is
   SDL_mixer/OpenAL the fix?
 - OQ-6: Is Omnitech's custom-campaign format documented anywhere, and can our

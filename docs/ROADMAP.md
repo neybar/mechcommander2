@@ -36,10 +36,14 @@ per the project owner: a clean build on macOS is the first success condition.
       — docs/RENDERER_AUDIT.md: the gos_* API is the waist; backends live in
       GameOS/gameos/render{gl,vk}/ behind `cmake -DMC2_RENDERER=...`
 - [ ] Vulkan backend behind that boundary; MoltenVK on macOS
-      — *scaffold done: MoltenVK clears/presents inside the real game loop;
-      null gos_* backend runs the game logic. Parity work next.*
-- [ ] Shader translation strategy decided (OQ-4) and implemented
-      — *leaning: port the ~9 small shaders to Vulkan-GLSL, offline glslc*
+      — *playable, not yet at GL parity: Mission 1 completed and Mission 2
+      started on the vk build, and it runs with zero Khronos validation errors
+      (2026-07-30). One rendering finding still open (a mech's team-colour skin
+      flipping blue↔red) and later missions aren't swept yet — see
+      CLAUDE.md's current status and CREDIT_PLAN task 4. No perf pass done.*
+- [x] Shader translation strategy decided (OQ-4) and implemented
+      — the ~9 shaders were ported to Vulkan-GLSL and are compiled offline with
+      `glslc`; the `.spv` are checked in under `shaders/vk/` (see BUILDING.md)
 - [ ] OpenGL path kept until Vulkan reaches parity, then retired
 - Exit criterion: same mission plays on the Vulkan backend on all three platforms.
 

@@ -1,5 +1,13 @@
 # Brief for the Xcode Metal frame debugger session
 
+> **HISTORICAL — the bug this brief investigates was SOLVED on 2026-07-27, the
+> same day this was written, and not by the line of enquiry below.** The
+> cement/pavement holes were zero-alpha textures (the draw rasterized perfectly
+> and painted nothing), not a rasterization or clipping problem. See
+> `2026-07-24-vk-cement-holes-FINDINGS.md` and the ENGINEERING_LOG entry.
+> Kept because the frame-debugger *method* it describes is what cracked the bug
+> and is worth reusing — but do not pick up its hypotheses, they are refuted.
+
 Paste this into the Claude chat inside Xcode. It is self-contained — it assumes
 no knowledge of the mc2 repo.
 

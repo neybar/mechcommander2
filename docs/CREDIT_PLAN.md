@@ -74,8 +74,11 @@ that discipline is what makes model switches cheap.
      daytime windows are meant to be dark grey `0x2f2f2f` (`tgl.cpp:1763`),
      so the *dark* state is correct and the *see-through* state is the bug.
      The window pass draws untextured alpha with depth-write on (`ZWrite=1`,
-     `ZCompare=LEQUAL`, `txmmgr.cpp:1404-1418`; port FIXME at
-     `txmmgr.cpp:1412`) so glass panes depth-reject each other. **Provenance
+     `ZCompare=LEQUAL`, in `mclib/txmmgr.cpp` — find it by the port FIXME
+     starting "becase some objects are drawn with alphs blend + depth write";
+     it was at :1412 when this was written and had already drifted to :1468 by
+     2026-07-30, so search the text, not the line) so glass panes depth-reject
+     each other. **Provenance
      confirmed against the pristine Microsoft 2006 shared-source**
      (`ms_txmmgr.cpp:796-810`, same depth-writing alpha pass) — original
      Microsoft code, like task 18, not a port regression. Reproduces on GL;
@@ -260,13 +263,18 @@ that discipline is what makes model switches cheap.
 
 ### Doc hygiene (batch when convenient)
 
-17. **Fix a drifted line-reference in ENGINEERING_LOG**: the 2026-07-18 AD-4
-    entry cites `code/mechcmd2.cpp:2689` for `Environment.checkCDForFiles`,
-    but the line has since drifted to **2701** (and its current value is
-    `true`; the entry describes flipping it to `false` as the proposed fix
-    for the missing-file retry-loop hang, which is still accurate in intent).
-    Surfaced by the 2026-07-20 lead review. Trivial. — **SONNET** (fold into
-    any nearby docs PR rather than spending a session on it alone).
+17. ~~**Fix a drifted line-reference in ENGINEERING_LOG**~~ **DONE
+    (2026-07-30).** The 2026-07-18 AD-4 entry cited
+    `code/mechcmd2.cpp:2689` for `Environment.checkCDForFiles`; by the time
+    this was picked up it had drifted twice more (2701 → **2708**), which is
+    the whole argument against citing line numbers for a moving target. Fixed
+    by citing the **symbol** instead, with the drift history kept as a warning.
+    Same treatment applied to task 4's `txmmgr.cpp` FIXME citation (:1412 →
+    :1468 after PR #7), now anchored on the comment text.
+
+    **Standing practice from this:** cite a function or symbol name and let the
+    reader grep. A line number in a doc is only accurate on the day it is
+    written.
 
 ### Bugs found during playtesting
 

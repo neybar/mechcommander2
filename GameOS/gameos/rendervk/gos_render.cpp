@@ -254,9 +254,10 @@ bool get_display_mode_by_index(int display_index, int mode_index, int* width, in
 
 ////////////////////////////////////////////////////////////////////////////////
 
-// Render-completion semaphores belong to the swapchain, not the frame loop:
-// they are only safe to destroy once the swapchain that presented with them
-// is gone, so this is deliberately not part of destroy_swapchain_views().
+// Render-completion semaphores belong to the swapchain, not the frame loop, so
+// this is deliberately not part of destroy_swapchain_views(): callers must have
+// destroyed the swapchain that presented with them first. That is necessary but
+// not provably sufficient in core Vulkan -- see the caveat in create_swapchain.
 static void destroy_render_done_semaphores(RenderContext* ctx)
 {
     for(size_t i = 0; i < ctx->sem_render_done_.size(); ++i)
@@ -342,9 +343,16 @@ static void create_swapchain(RenderContext* ctx)
     ctx->swapchain_images_.resize(nimages);
     vkGetSwapchainImagesKHR(ctx->device_, ctx->swapchain_, &nimages, ctx->swapchain_images_.data());
 
-    // One render-completion semaphore per image. Safe to recreate here: the
-    // old swapchain has just been destroyed, which retires any present still
-    // holding the previous semaphores.
+    // One render-completion semaphore per image, recreated with the swapchain.
+    //
+    // Caveat, deliberately not glossed: core Vulkan gives no way to know when
+    // a present has finished waiting on a semaphore, so destroying these is
+    // strictly unspecified without VK_KHR_swapchain_maintenance1's present
+    // fence (Khronos Vulkan-Docs #2007). What we have is the best available
+    // approximation -- the only path here runs vkDeviceWaitIdle first, and
+    // MoltenVK drains presents on the same queue, so it holds on macOS. It is
+    // a portability risk for the Linux/Windows builds, not a guarantee:
+    // docs/bugs/2026-07-30-present-semaphore-destroy-unspecified.md
     destroy_render_done_semaphores(ctx);
     ctx->sem_render_done_.resize(nimages);
     VkSemaphoreCreateInfo rdsemci = {};
@@ -768,7 +776,8 @@ void destroy_render_context(RenderContextHandle rc_handle)
     vkDestroyCommandPool(ctx->device_, ctx->cmd_pool_, NULL);
     vkDestroyRenderPass(ctx->device_, ctx->render_pass_, NULL);
     vkDestroySwapchainKHR(ctx->device_, ctx->swapchain_, NULL);
-    // after the swapchain, so no present can still be waiting on them
+    // after the swapchain, which is the closest core Vulkan gets to retiring a
+    // pending present's semaphore wait -- see the caveat in create_swapchain
     destroy_render_done_semaphores(ctx);
     vkDestroyDevice(ctx->device_, NULL);
     vkDestroySurfaceKHR(ctx->instance_, ctx->surface_, NULL);

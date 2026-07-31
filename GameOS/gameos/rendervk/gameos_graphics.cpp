@@ -513,6 +513,13 @@ void engineDestroy()
         vkFreeMemory(dev, g_deferred_buffers[i].memory, NULL);
     }
     g_deferred_buffers.clear();
+    // Note this only covers gosBuffers the game has already destroyed. Ones
+    // still alive are not reachable from here, so a zero-leak teardown relies
+    // on the game tearing its buffers down first (txmmgr's light/scene UBOs,
+    // tgl's vertex/index buffers) before gos_DestroyRenderer runs last in
+    // TerminateGameEngine. That ordering holds today but nothing enforces it:
+    // an early-exit path that skips texture-manager teardown would put live
+    // buffers back at vkDestroyDevice.
 
     // live textures: slots are append-only and never reused, so a dead slot
     // has already had its GPU objects nulled by deferDestroyTextureGpu
@@ -529,11 +536,12 @@ void engineDestroy()
     }
     g_textures.clear();
 
-    if(!g_eng.initialized) {
-        g_eng = VkDrawEngine();
-        return;
-    }
-
+    // No `if(!initialized) return` shortcut: engineInit sets init_failed and
+    // bails *after* creating some of the 12 shader modules (a stale or missing
+    // .spv in the deploy dir is enough), and those would leak right back into
+    // VUID-vkDestroyDevice-device-05137. Everything below is handle-guarded or
+    // iterates a container that is empty when init never ran, so the uniform
+    // path is correct whether init succeeded, failed halfway, or never started.
     for(std::map<PipelineKey, VkPipeline>::iterator it = g_eng.pipelines.begin();
         it != g_eng.pipelines.end(); ++it) {
         vkDestroyPipeline(dev, it->second, NULL);
@@ -576,7 +584,13 @@ void engineDestroy()
         vkFreeMemory(dev, g_eng.dummy_ubo_mem, NULL);
     }
 
-    // reset so a re-init after a device teardown starts from a clean slate
+    // Teardown is terminal: gos_DestroyRenderer runs once, last, from
+    // TerminateGameEngine. Zeroing here just leaves no dangling handles -- it
+    // does NOT make the engine re-initialisable, because g_textures.clear()
+    // above restarts handle numbering at 1 while txmmgr may still hold stale
+    // handles naming the old slots (see the NEVER-reuse-slots note on
+    // addTexture). A future re-init path would have to fix handle allocation
+    // first.
     g_eng = VkDrawEngine();
 }
 

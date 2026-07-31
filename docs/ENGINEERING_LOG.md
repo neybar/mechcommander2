@@ -40,6 +40,22 @@ in `destroy_render_context`. Deliberately **not** part of
 `sem_image_available_` stays single: it is per frame-in-flight, there is exactly
 one frame in flight, and the fence does prove its wait was consumed.
 
+**Correction, same day (review catch):** the first version of this entry, and
+the code comments with it, said destroying the old swapchain "retires any
+present still holding the previous semaphores." **That is not a Vulkan
+guarantee and should not have been written as one.** Core Vulkan gives no way
+to know when a presentation engine has finished waiting on a semaphore —
+Vulkan-Docs #2007 says so explicitly, and neither `vkDeviceWaitIdle` nor
+`vkQueueWaitIdle` covers a pending present; only
+`VK_KHR/EXT_swapchain_maintenance1`'s present fence specifies it. What the code
+does is the best approximation available without that extension (the recreate
+path device-waits first, and MoltenVK drains presents on the same queue), which
+holds on macOS and is a **portability risk for M3's Linux/Windows builds**.
+Logged as `docs/bugs/2026-07-30-present-semaphore-destroy-unspecified.md`.
+Note the zero-VUID result does **not** vindicate the original wording: the
+validation layer only checks present-semaphore destruction when
+`swapchain_maintenance1` is enabled.
+
 **Cause 2 — the vk draw engine had no teardown at all.** `engineInit` creates
 pipelines, shader modules, samplers, descriptor set/pipeline layouts, a
 descriptor pool, the 16MB host ring and the dummy image/UBO; textures allocate
@@ -55,6 +71,22 @@ after `vkDeviceWaitIdle` and before everything else. It also flushes the
 deferred image/buffer lists, which otherwise never get their `vk_begin_frame`
 flush on the last frame. Destroying the descriptor pool frees its 41 sets, so
 they need no separate pass.
+
+The first version had an `if(!g_eng.initialized) return` shortcut, which the
+review caught as reintroducing the very VUID it closes: `engineInit` sets
+`init_failed` and bails *after* creating some of the 12 shader modules (a stale
+or missing `.spv` in the deploy dir is enough), and the shortcut skipped the
+shader-destroy loop. Removed — every step is handle-guarded or iterates a
+container that is empty when init never ran, so one uniform path is correct
+whether init succeeded, failed halfway, or never started. General lesson:
+an early-out keyed on a "fully initialised" flag is the wrong shape for a
+teardown, because partial initialisation is exactly when teardown matters.
+
+Not covered, deliberately: gosBuffers still alive at shutdown aren't reachable
+from `engineDestroy`, so the zero-leak result depends on the game destroying
+its own buffers (txmmgr's light/scene UBOs, tgl's vertex/index buffers) before
+`gos_DestroyRenderer` runs last in `TerminateGameEngine`. True today, enforced
+by nothing; noted in a comment at the call site.
 
 **Note for whoever adds a namespace-scoped helper to `gameos_graphics.cpp`:**
 almost the whole file sits inside an **anonymous namespace** (opens at ~219,
@@ -745,7 +777,9 @@ On this port `MessageBoxA` is stubbed to a `printf` that always `return 0`
 (`GameOS/src/platform_winuser.cpp:34-38`) — never equal to `IDCANCEL` — so the
 loop never exits: it spams `MSGBOX: ...` to stdout forever with no way to quit
 except killing the process. `Environment.checkCDForFiles = false`
-(`code/mechcmd2.cpp:2689`) would skip the whole retry path and return a normal
+(search `code/mechcmd2.cpp` for `checkCDForFiles`; it is set to `true` there —
+cited as :2689 when this was written, since drifted to :2701 and then :2708,
+hence the symbol) would skip the whole retry path and return a normal
 "not found" error instead; that's the likely fix whenever someone picks this
 up, plus checking whether legitimate legacy CD-swap use cases still need the
 retry loop at all on this port.
