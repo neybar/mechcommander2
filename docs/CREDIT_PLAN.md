@@ -263,6 +263,13 @@ that discipline is what makes model switches cheap.
 
 ### Doc hygiene (batch when convenient)
 
+**Note on task numbering:** numbers are allocation order, not document order —
+task 19 sits physically between 10 and 11 because it was appended to the "Soon"
+section after the fact. Don't renumber to tidy it up: the numbers are cited from
+ENGINEERING_LOG entries, commit messages and PR descriptions, so renumbering
+would silently invalidate those references. Check for *duplicates* after a
+merge; ignore ordering.
+
 17. ~~**Fix a drifted line-reference in ENGINEERING_LOG**~~ **DONE
     (2026-07-30).** The 2026-07-18 AD-4 entry cited
     `code/mechcmd2.cpp:2689` for `Environment.checkCDForFiles`; by the time
