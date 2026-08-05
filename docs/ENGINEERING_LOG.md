@@ -6,6 +6,186 @@ Newest entries at the top. Practice borrowed from the
 
 ---
 
+## 2026-07-31 — Task 4 finding 3 SOLVED: `-DBGR` was inverting every team colour; the flip was a symptom. Not a vk descriptor collision
+
+**Refutes the 2026-07-20 entry "Downed mech flips team-color skin (blue ↔ red)
+between frames on vk", and the cross-reference to it inside the 2026-07-20 glass
+entry ("the mech flip is texture-based (binding/descriptor class)"). Both were
+wrong. This is not a Vulkan bug, not a descriptor-cache bug, and not a texture
+*binding* bug at all.**
+
+**Symptom.** A mech's team-colour skin flips blue↔red (with the chest highlight
+flipping cyan↔yellow), moments apart, same unit, no respawn — driven by camera
+position. jalance re-confirmed it 2026-07-31 and added two observations that
+broke the case open: he had **only ever noticed it on downed enemy mechs**, and
+it looked **camera-position dependent**. (Stated as observations, not
+boundaries — which was the right framing, because "downed" and "enemy" turned
+out to be incidental.)
+
+**The refutation that mattered, and it was free.** jalance ran the same scene on
+the **GL** build and the flip happened there too. A descriptor-cache-key
+collision is a Vulkan-only mechanism, so one comparison falsified the standing
+hypothesis outright. The code involved is in `mclib`, with no renderer code
+anywhere in the path.
+
+**Mechanism of the flip — a get/set asymmetry under `#if defined(BGR)`.**
+
+- `Mech3DAppearance::getPaintScheme` **always** applies `bgrTorgb` (an R↔B byte
+  swap).
+- `Mech3DAppearance::setPaintScheme(DWORD,DWORD,DWORD)` **always** applies it
+  when storing `psRed/psGreen/psBlue`. So get/set round-trip cleanly.
+- **But** `resetPaintScheme`'s early-return branch — taken when the texture
+  instance already exists, under the comment `//Still need to store
+  psRed/psGreen/psBlue!!!!` — stored `psRed = red` **raw**, skipping the
+  conversion.
+- Every LOD transition runs `getPaintScheme(r,g,b); resetPaintScheme(r,g,b);`
+  (`Mech3DAppearance::render`, the `selectLOD != currentLOD` and `currentLOD &&
+  baseLOD` blocks). So each camera-driven LOD crossing swapped R and B, which
+  changed the computed `paintInstance` key, which selected **a genuinely
+  different texture instance**. Self-sustaining: it flips back on the next
+  crossing, forever.
+
+That is why it looked like wrong-texture-content: the engine really did load and
+bind a differently-coloured skin. Nothing was mis-bound; the *request* was wrong.
+
+**Root cause — but the asymmetry is not the real defect. `-DBGR` is.**
+
+> **This section supersedes an earlier draft of this same entry**, which
+> concluded that `-DBGR` merely *activated* a dormant Microsoft bug and that
+> equalising the two storage paths was the fix. That was wrong, and it would
+> have shipped a build where **every** mech and vehicle rendered with R and B
+> inverted — stably, instead of intermittently. Caught in review before merge.
+
+The engine's colour DWORDs are **`0xAARRGGBB`**, and `bgrTorgb` converts *out*
+of the format the engine already uses. Evidence, all from data rather than
+elimination:
+
+- `mclib/tgl.cpp:1811` `0xffff0000 //Hot Red`, `:1815` `0xff0000ff //Hot Blue`.
+- Locked texture memory is `0xAARRGGBB` on **both** backends — GL's swizzle loop
+  in `Lock()` (`rendergl/gameos_graphics.cpp`) and vk's `swizzleRB`
+  (`rendervk/gameos_graphics.cpp`) perform the same transform. There is no
+  GL-vs-vk divergence here for `-DBGR` to be compensating for.
+- `setPaintScheme(void)` reads `ps*` as `0x00RRGGBB` and writes `0xff<<24 |
+  r<<16 | g<<8 | b`. So `ps*` must be RGB-ordered, which the *incoming* mission
+  and prefs colours already are.
+
+**The history is a double-correction.** `d0ce5f4` (2016-11-19, *"rgba -> bgra ->
+rgba conversion on lock/unlock, because CPU code expects BGRA"*) already made
+lock/unlock hand CPU code the right byte order. Ten months later `383e3c2`
+(2017-09-29, *"fixed paint scheme BGR define was missing"*, a one-line CMake
+change with no rationale) added `-DBGR` on top of it. Both are upstream
+(alariq); the second undoes the first for paint schemes only.
+
+**So `-DBGR` had two effects**, and only the second was ever noticed: it inverted
+R↔B on every mech and vehicle team colour, *and* it broke the get/set round-trip
+so the inversion oscillated on LOD changes. The oscillation is what got reported;
+the inversion had been there since 2017, hiding in plain sight as "that's just
+what the colours look like."
+
+**Fix: remove `-DBGR`** (`mclib/CMakeLists.txt`, replaced with a comment saying
+why it must not come back). With `BGR` undefined, `getPaintScheme` and the store
+are both the identity, so the early-return's raw store becomes genuinely
+equivalent — the oscillation disappears **by construction**, not by patching, and
+colours come out as authored.
+
+**Also kept: a `storePaintScheme()` helper** on both `Mech3DAppearance` and
+`GVAppearance`, with `setPaintScheme(DWORD,DWORD,DWORD)` and all three
+early-return sites (1 in `mech3d.cpp`, 2 in `gvactor.cpp`) routed through it.
+This is **defence in depth, not the fix** — it makes the two storage paths
+incapable of diverging if anyone ever defines `BGR` again.
+
+**Why the incidental observations fit.** Downed mechs are stationary corpses you
+pan around, and the destruction path forces `currentLOD = 0`, guaranteeing a
+transition on the next frame the camera isn't close — so they're where you'd
+*notice* it. But "downed" and "enemy" were never preconditions, and jalance was
+careful to file them as observations rather than boundaries. That framing
+mattered: **the player's own lance was flipping the whole time.** The very log
+lines used as evidence — `in(r=0007083e g=0007083e b=00fae525)` — are
+`resetPaintScheme(highlightColor, highlightColor, baseColor)` from
+`mission.cpp:1093`, i.e. the *player* branch, carrying jalance's own configured
+colours. A theory built on "enemies only" would have been chasing a boundary
+that didn't exist.
+
+**Provenance — port regression, not an original-engine wart.** Both halves are
+upstream's: the `-DBGR` define (`383e3c2`) and the `d0ce5f4` lock/unlock swizzle
+it double-corrects. The asymmetric early-return is Microsoft's, but it was
+**inert** in their build — MS never defined `BGR` (confirmed: `mclib/MCLib.vcproj`
+preprocessor definitions contain no `BGR`), so both storage paths were the
+identity and `psRed = red` was exactly correct. Per jalance (2026-07-31), the
+preserve-warts-and-all rule applies only to defects that were **also in the
+DirectX original**; anything upstream introduced in the GL conversion is fair
+game, so this was fixed outright rather than gated behind an opt-in.
+
+**Vehicles had it too.** `GVAppearance` carries the identical early-return
+asymmetry at two sites, and the inversion applied to vehicles equally. Enemy
+colours are per-unit mission data (`mission.cpp:1095`), not a global palette;
+only the player's side uses `prefs`.
+
+**Verification, in two parts.**
+
+*1 — the flip is gone.* Temporary `MC2_PAINT_DEBUG` instrumentation logged every
+`resetPaintScheme` (incoming colour, stored `ps*`, `paintInstance`,
+`currentLOD`), before and after, on the same archived save. Counting only
+**re-paints of already-painted mechs** — excluding first-paint events where `ps`
+is still the `0xffffffff` constructor sentinel; raw `grep -c "PAINT reset"` gives
+45 and 70 and is *not* the number below:
+
+| | before | after |
+|---|---|---|
+| re-paints of already-painted mechs | 11 | **36** |
+| instances that changed texture instance | **1** | **0** |
+
+The path was exercised **3x more** and never once swapped, so this is not a false
+pass from the code path going quiet. Before, the oscillator (`this=0x786e14000`)
+alternated `inst=2b8004d` ↔ `6a80149` on each `lod=` change.
+
+*2 — the colours are right, which part 1 could not show.* This is the check that
+caught the bad first fix. Under the storePaintScheme-only version, a fresh
+mission rendered jalance's lance **teal**; with `-DBGR` removed it renders
+**yellow with dark navy trim**, matching his `options.cfg` exactly:
+
+| setting | value | RGB |
+|---|---|---|
+| `BaseColor` | `0x00fae525` | (250, 229, 37) yellow |
+| `Highlightcolor` | `0x0007083e` | (7, 8, 62) dark navy |
+
+And `bgrTorgb(0x00fae525)` = `0x0025e5fa` = (37, 229, 250) — exactly the teal
+seen before. Screenshot-verified on a **fresh mission**, not a save.
+
+**The archived repro save cannot answer part 2**, which is why part 2 needed a
+fresh mission: `ps*` is serialized (`mover.cpp:7375` saves `getPaintScheme`
+output, `:7541` restores it), so a save written pre-fix has each mover's colour
+baked in at whatever parity it happened to be at. In the post-fix log, two movers
+of the same team sit permanently at `inst=2b8004d` and `6a80149` — one the exact
+swap of the other. See `docs/bugs/2026-07-31-paintscheme-baked-into-saves.md`.
+
+**Two false conclusions were drawn from that polluted save and are worth
+recording**, because both looked like corroboration at the time: that enemy cargo
+trucks "landing on their authored red" confirmed the fix (it was baked save data,
+not authored data), and that the player's lance had never been affected (it had —
+see above). Evidence from a save written *by the buggy build* is evidence about
+the bug, not about the fix.
+
+**Lesson — this is the "elimination is not a root cause" rule, skipped.** Finding
+3 was triaged to OPUS *because* it pattern-matched the 2026-07-17 descriptor-cache
+entry's symptom description ("stable-looking but wrong texture content ...
+flipping with camera/render state"). That match was never gated on a GL-vs-vk
+comparison, and the comparison takes one playthrough and costs nothing. A
+familiar-looking symptom is a reason to run the cheap discriminating test first,
+not a reason to skip it. The 2026-07-17 entry is accurate about what it fixed —
+the error was in over-applying it.
+
+**Second lesson — "the symptom stopped" is not "the bug is fixed."** The first
+fix made the flip go away and had a clean instrumented before/after to prove it,
+and it was still wrong: it stabilised the *inverted* colour, and would have
+shipped every mech and vehicle permanently mis-coloured. What caught it was
+asking why the offending code existed at all, rather than only whether the
+symptom was gone. The discriminating test — "what colour *should* this be, and
+does it match?" — costs one fresh mission and was never run until review forced
+it. When a fix equalises two paths, check which of them was right.
+
+---
+
 ## 2026-07-30 — Task 18 shadows: the double-yaw hypothesis is REFUTED; it's original-engine shadow quality
 
 **Supersedes the root-cause hypothesis in the 2026-07-20 entry "Mech shadows
@@ -199,6 +379,11 @@ real texture-binding bug at the time.
 
 Net: task 4 has exactly **one** open finding left — the mech team-colour
 blue→red flip (finding 3).
+
+> **Update 2026-07-31:** finding 3 is now closed too, so **all four Mission 1
+> findings are resolved** and task 4 has zero open findings from Mission 1
+> (later missions still unswept). It was not the texture-binding bug this entry
+> assumed was live at the time — see the 2026-07-31 entry at the top.
 
 ---
 
@@ -431,10 +616,20 @@ descriptor/texture-binding family for the glass, but also means it says
 nothing about the mech. Mech team colour is a **per-instance recoloured
 texture**: `Mech3DAppearance::setPaintScheme` (`mech3d.cpp:1619`) reads base
 texture pixels (`baseColor = *textureMemory`) and rewrites their RGB per the
-paint scheme. So the mech flip is texture-based (binding/descriptor class),
-the glass flip is untextured-alpha compositing — treat them as **separate
-bugs**. (Retracts the prior "rules out team-color selection logic" claim,
-which wrongly assumed a shared cause.)
+paint scheme. So the mech flip is texture-based, the glass flip is
+untextured-alpha compositing — treat them as **separate bugs**. (Retracts the
+prior "rules out team-color selection logic" claim, which wrongly assumed a
+shared cause.)
+
+> **Correction, 2026-07-31:** the "**(binding/descriptor class)**" label
+> originally attached to the mech flip in the sentence above was **wrong**, and
+> has been struck from it. The mech flip was solved 2026-07-31: it is a BGR
+> get/set round-trip asymmetry in `Mech3DAppearance::resetPaintScheme`, in
+> `mclib`, reproducing on **both** backends — no binding, no descriptor, no
+> renderer code. The "separate bugs" conclusion this paragraph draws is still
+> correct; only the proposed class for the mech half was wrong. This is the
+> second place that bad label was recorded, which is why it needed correcting
+> here as well as in the finding-3 entry itself.
 
 **Root cause found — it's a documented pre-existing engine bug, not vk.**
 The window pass carries an upstream FIXME describing this exact symptom
@@ -600,7 +795,16 @@ codepath is the culprit.
 
 ---
 
-## 2026-07-20 — Downed mech flips team-color skin (blue ↔ red) between frames on vk (task 4, open — likely descriptor-cache collision)
+## 2026-07-20 — Downed mech flips team-color skin (blue ↔ red) between frames on vk (task 4 — SOLVED 2026-07-31, root cause below is WRONG)
+
+> **CLOSED 2026-07-31. The descriptor-cache-collision hypothesis in this entry is
+> REFUTED.** It is not a Vulkan bug and not a cache/binding bug: it reproduces on
+> GL too, and the cause is a BGR get/set round-trip asymmetry in
+> `Mech3DAppearance::resetPaintScheme`'s early-return path, in `mclib`, with no
+> renderer code involved. The "on vk" in this heading is also wrong.
+> See the 2026-07-31 entry at the top of this log. Kept for the record, and as a
+> worked example of a symptom-profile pattern-match that went unchecked against
+> the cheap GL-vs-vk test.
 
 **Symptom:** a downed/kneeling mech, same pose and geometry, rendered deep
 blue with a cyan chest panel in one screenshot (`docs/bugs/2026-07-20-task4/mc2_downed_mech_1.png`,

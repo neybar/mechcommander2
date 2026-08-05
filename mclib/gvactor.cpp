@@ -1225,7 +1225,7 @@ void GVAppearance::setPaintScheme (void)
 DWORD bgrTorgb (DWORD frontRGB);
 
 //-----------------------------------------------------------------------------
-void GVAppearance::setPaintScheme (DWORD mcRed, DWORD mcGreen, DWORD mcBlue)
+void GVAppearance::storePaintScheme (DWORD mcRed, DWORD mcGreen, DWORD mcBlue)
 {
 #ifdef BGR
 	// These come into here bgr instead of RGB.  CONVERT!
@@ -1237,9 +1237,15 @@ void GVAppearance::setPaintScheme (DWORD mcRed, DWORD mcGreen, DWORD mcBlue)
 	psBlue = mcBlue;
 	psGreen = mcGreen;
 #endif /*BGR*/
+}
 
-	setPaintScheme();	
-}	
+//-----------------------------------------------------------------------------
+void GVAppearance::setPaintScheme (DWORD mcRed, DWORD mcGreen, DWORD mcBlue)
+{
+	storePaintScheme(mcRed, mcGreen, mcBlue);
+
+	setPaintScheme();
+}
 
 //-----------------------------------------------------------------------------
 void GVAppearance::getPaintScheme( DWORD& red, DWORD& green, DWORD& blue )
@@ -1310,9 +1316,10 @@ void GVAppearance::resetPaintScheme (DWORD red, DWORD green, DWORD blue)
 				applied. */
 	
 				//Still need to store psRed/psGreen/psBlue!!!!
-				psRed = red;
-				psGreen = green;
-				psBlue = blue;
+				// Must go through storePaintScheme -- see the matching comment
+				// in Mech3DAppearance::resetPaintScheme. Assigning raw here
+				// breaks the get/reset round-trip and swaps R and B.
+				storePaintScheme(red, green, blue);
 				return;
 			}
 		}
@@ -1332,9 +1339,10 @@ void GVAppearance::resetPaintScheme (DWORD red, DWORD green, DWORD blue)
 				applied. */
 	
 				//Still need to store psRed/psGreen/psBlue!!!!
-				psRed = red;
-				psGreen = green;
-				psBlue = blue;
+				// Must go through storePaintScheme -- see the matching comment
+				// in Mech3DAppearance::resetPaintScheme. Assigning raw here
+				// breaks the get/reset round-trip and swaps R and B.
+				storePaintScheme(red, green, blue);
 				return;
 			}
 		}

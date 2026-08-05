@@ -20,15 +20,23 @@ load. Resolution requests are clamped to the desktop display's bounds
 from mc2srcdata; deployment recipe in ENGINEERING_LOG — note
 `data/missions/` and `data/campaign/` must be unpacked on disk).
 
-**M2 in progress (2026-07-30): the Vulkan backend exists and is playable.**
+**M2 in progress (2026-07-31): the Vulkan backend exists and is playable.**
 Both backends build from one tree — `cmake --build build` → GL, `cmake --build
-build-vk` → Vulkan (MoltenVK). Mission 1 has been completed and Mission 2
-started on the vk build. Parity is close but not confirmed: of the four
-task-4 findings from Mission 1, three are closed (the black quad =
-cement/pavement holes, fixed; building glass = original-engine wart;
-checkerboard wreck = not a bug) and **one is open** — a mech's team-colour
-skin flipping blue↔red, which matches the descriptor-cache-collision class.
-Later missions haven't been swept yet. No perf pass has been done.
+build-vk` → Vulkan (MoltenVK). Mission 1 has been completed, and Mission 3 is
+in progress on the vk build. **All four task-4 findings from Mission 1 are now
+closed**: the black quad = cement/pavement holes (fixed); building glass =
+original-engine wart; checkerboard wreck = not a bug; and the mech team-colour
+flip = **upstream's `-DBGR` inverting every team colour, not a vk bug at all**
+(fixed 2026-07-31 by removing the define — it reproduced on GL too, which killed
+the long-standing descriptor-cache-collision theory). Later missions haven't been
+swept yet, so parity is still unconfirmed. No perf pass has been done.
+
+Two cautions that cost real time there. **A Vulkan-looking symptom is not a
+Vulkan bug until GL has been checked** — one GL playthrough is free and
+falsifies a whole class of theories. And **"the symptom stopped" is not "the bug
+is fixed"**: the first `-DBGR` fix attempt removed the flicker with clean
+instrumented proof, while leaving every mech permanently mis-coloured. Ask why
+the offending code exists, not just whether the symptom is gone.
 
 **The vk backend now runs with zero Khronos validation errors or warnings**
 (task 19, 2026-07-30: per-swapchain-image render semaphores + a real draw-engine
@@ -43,7 +51,8 @@ unspecified in core Vulkan and the layer only checks it under
 `swapchain_maintenance1` — see `docs/bugs/2026-07-30-present-semaphore-destroy-unspecified.md`.
 
 Next up, in `docs/CREDIT_PLAN.md` order — **task 4** effects/transparency
-parity sweep (needs user playtesting; one open finding), **task 3's** leftover
+parity sweep (needs user playtesting; Mission 1 fully closed, later missions
+unswept), **task 3's** leftover
 intermittent SIGSEGV in `SoundEngine::destroy()` on shutdown, **task 10**
 clang-tidy warning audit, then **task 11** the vk perf pass. Pick from the plan
 rather than inventing an order.
@@ -72,7 +81,9 @@ Runtime hooks (all `#ifndef FINAL`, all off unless set):
 
 **`tools/vkprobe/run.sh`** wraps launch → settle → capture → clean-quit for
 headless repros (`--save`, `--capture screenshot|gputrace|log`, `--at/--quit`,
-`--bin` for GL vs vk). It passes through any exported `MC2_*`, so check
+`--bin` for GL vs vk). **`--play`** hands the session to a human instead — no
+autoquit, no force-kill — for bugs that need camera work no dev hook can drive
+(the task-4 paint flip needed LOD transitions, i.e. someone panning). It passes through any exported `MC2_*`, so check
 `env | grep MC2_` before a capture that matters — a stale export will silently
 change the result. Archived repro saves live in `docs/bugs/saves/`; load them
 **by explicit path**, never by copying over the user's live quicksave.

@@ -274,6 +274,9 @@ class GVAppearance : public ObjectAppearance
 
 		virtual void setPaintScheme (DWORD red, DWORD green, DWORD blue);
 
+		// See Mech3DAppearance::storePaintScheme -- same round-trip hazard.
+		void storePaintScheme (DWORD red, DWORD green, DWORD blue);
+
 		virtual void getPaintScheme (DWORD &red, DWORD &green, DWORD &blue);
 
 		virtual void resetPaintScheme (DWORD red, DWORD green, DWORD blue);

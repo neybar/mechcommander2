@@ -86,7 +86,15 @@ set(SOURCES ${SOURCES}
 include_directories(${COMMON_INCLUDE_DIRS} "./mclib" "../Editor" "../DirectX8/include" "./")
 include_directories(${THIRDPARTY_INCLUDE_DIRS})
 
-add_definitions(-DBGR)
+# DO NOT re-add -DBGR here. Upstream added it in 383e3c2 ("fixed paint scheme
+# BGR define was missing", 2017-09-29) but the byte order it corrects for was
+# ALREADY handled ten months earlier in d0ce5f4, which makes gos_LockTexture /
+# gos_UnLockTexture hand CPU code 0xAARRGGBB on both backends. Defining BGR
+# therefore double-corrects: it R<->B-inverts every mech and vehicle team
+# colour -- whatever BaseColor/Highlightcolor are set to, the lance renders as
+# their R/B swap -- and it breaks the getPaintScheme/setPaintScheme round-trip,
+# which is what produced the task-4 team-colour flip.
+# See ENGINEERING_LOG 2026-07-31.
 add_library(mclib ${SOURCES})
 
 # cat MCLib.vcproj | grep ".cpp" | perl -pe 's/.+\"(\w+\.cpp)\".+/\1/g' >> CMakeLists.txt
