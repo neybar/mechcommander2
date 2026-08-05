@@ -39,8 +39,9 @@ that discipline is what makes model switches cheap.
    missions on vk (free!); for anything off, GL-vs-vk screenshot pairs +
    MC2_VK_DEBUG log land in a bug note. — user + **SONNET** intake;
    **OPUS** for blend/state fixes; **FABLE** for anything that looks
-   like today's descriptor-collision class. **In progress** — four findings
-   from Mission 1 so far, three closed, finding 3 the only one still open:
+   like today's descriptor-collision class. **All four Mission 1 findings are
+   now closed (2026-07-31).** Later campaign missions have not been swept yet,
+   so the task itself stays open pending playtesting:
 
    - ~~**Finding 1 — recurring black quad (Mission 1, parking pad / tower
      roof / wall)**~~ **CLOSED 2026-07-27: same bug as the vk cement/
@@ -57,16 +58,30 @@ that discipline is what makes model switches cheap.
      **CLOSED 2026-07-29, not a bug**: user's call on review — it is just
      low-resolution wreck art, not a wrong/missing texture. No vk/GL
      divergence claimed; nothing to fix.
-   - **Finding 3 — downed mech's team-color skin flips blue→red**
-     between two screenshots moments apart (same mech, small camera pan,
-     no respawn). A direct match to the 2026-07-17 descriptor-cache-
-     collision signature (stable wrong content, flips with render/camera
-     state) — either that fix has a gap or a related cache has the same
-     lossy-key mistake. Mech team colour is a per-instance *recoloured
-     texture* (`setPaintScheme`, `mech3d.cpp:1619`), i.e. a texture-binding
-     path. **This is the only open task-4 finding.** — **OPUS** first
-     since it matches an already-solved pattern, escalate to **FABLE**
-     only if it doesn't.
+   - ~~**Finding 3 — downed mech's team-color skin flips blue→red**~~
+     **CLOSED 2026-07-31 — fixed. NOT a descriptor-cache collision, and not a
+     vk bug at all.** The descriptor-collision triage recorded here was
+     **refuted** by one free test: jalance ran the same scene on **GL** and it
+     flipped there too, which a Vulkan-only cache mechanism cannot do. Real
+     cause: **`-DBGR` itself.** It R↔B-inverted *every* mech and vehicle team
+     colour, and because `resetPaintScheme`'s early-return stored `ps*` raw
+     while `getPaintScheme` always converted, the inversion also **oscillated**
+     on every LOD transition — which is the part that got reported.
+     Camera-dependence = LOD distance thresholds. **Fixed by removing `-DBGR`**
+     (`mclib/CMakeLists.txt`): with it undefined both paths are the identity, so
+     the flip disappears by construction *and* colours come out as authored.
+     A shared `storePaintScheme()` helper on `Mech3DAppearance` and
+     `GVAppearance` is kept as defence-in-depth, not as the fix.
+     **Port regression, not an original-engine wart:** the asymmetric code is
+     Microsoft's but was inert (MS never defined `BGR`); upstream's `383e3c2`
+     added `-DBGR` on top of `d0ce5f4`, which had already fixed the byte order
+     ten months earlier — a double-correction.
+     **Review caught a bad first fix** that equalised the two storage paths but
+     left the inversion in place, stabilising every unit on the *wrong* colour;
+     see ENGINEERING_LOG for that post-mortem. Verified twice: instrumented
+     before/after for the flip, and a fresh-mission screenshot for the colours
+     (lance renders yellow/navy, matching `options.cfg` exactly). Savegame
+     side-effect in `docs/bugs/2026-07-31-paintscheme-baked-into-saves.md`.
    - ~~**Finding 4 — building glass flips transparent↔opaque-dark with
      camera pan**~~ **CLOSED 2026-07-21: original-engine wart, not a vk
      parity issue.** Windows are drawn *untextured* (`addVertices(0xffffffff,

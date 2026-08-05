@@ -485,6 +485,11 @@ class Mech3DAppearance: public ObjectAppearance
 
 		virtual void setPaintScheme (DWORD red, DWORD green, DWORD blue);
 
+		// Store psRed/psGreen/psBlue applying the BGR conversion getPaintScheme
+		// undoes. Every path that caches the paint scheme MUST go through this,
+		// or get/set stop round-tripping -- see resetPaintScheme.
+		void storePaintScheme (DWORD red, DWORD green, DWORD blue);
+
 		virtual void getPaintScheme (DWORD &red, DWORD &green, DWORD &blue);
 
 		virtual void resetPaintScheme (DWORD red, DWORD green, DWORD blue);

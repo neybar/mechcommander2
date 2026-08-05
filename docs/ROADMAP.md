@@ -36,11 +36,13 @@ per the project owner: a clean build on macOS is the first success condition.
       — docs/RENDERER_AUDIT.md: the gos_* API is the waist; backends live in
       GameOS/gameos/render{gl,vk}/ behind `cmake -DMC2_RENDERER=...`
 - [ ] Vulkan backend behind that boundary; MoltenVK on macOS
-      — *playable, not yet at GL parity: Mission 1 completed and Mission 2
-      started on the vk build, and it runs with zero Khronos validation errors
-      (2026-07-30). One rendering finding still open (a mech's team-colour skin
-      flipping blue↔red) and later missions aren't swept yet — see
-      CLAUDE.md's current status and CREDIT_PLAN task 4. No perf pass done.*
+      — *playable, not yet at GL parity: Mission 1 completed and Mission 3 in
+      progress on the vk build, and it runs with zero Khronos validation errors
+      (2026-07-30). All four Mission 1 task-4 findings are now closed
+      (2026-07-31) — the last of them, the mech team-colour flip, turned out
+      **not** to be a rendering bug at all but a BGR round-trip bug in `mclib`
+      affecting both backends. Later missions aren't swept yet — see CLAUDE.md's
+      current status and CREDIT_PLAN task 4. No perf pass done.*
 - [x] Shader translation strategy decided (OQ-4) and implemented
       — the ~9 shaders were ported to Vulkan-GLSL and are compiled offline with
       `glslc`; the `.spv` are checked in under `shaders/vk/` (see BUILDING.md)

@@ -1728,7 +1728,7 @@ DWORD bgrTorgb (DWORD frontRGB)
 }
 
 //-----------------------------------------------------------------------------
-void Mech3DAppearance::setPaintScheme (DWORD mcRed, DWORD mcGreen, DWORD mcBlue)
+void Mech3DAppearance::storePaintScheme (DWORD mcRed, DWORD mcGreen, DWORD mcBlue)
 {
 #if defined(BGR)
 	// These come into here bgr instead of RGB.  CONVERT!
@@ -1740,9 +1740,15 @@ void Mech3DAppearance::setPaintScheme (DWORD mcRed, DWORD mcGreen, DWORD mcBlue)
 	psBlue = mcBlue;
 	psGreen = mcGreen;
 #endif /*BGR*/
+}
 
-	setPaintScheme();	
-}	
+//-----------------------------------------------------------------------------
+void Mech3DAppearance::setPaintScheme (DWORD mcRed, DWORD mcGreen, DWORD mcBlue)
+{
+	storePaintScheme(mcRed, mcGreen, mcBlue);
+
+	setPaintScheme();
+}
 
 //-----------------------------------------------------------------------------
 void Mech3DAppearance::getPaintScheme( DWORD& red, DWORD& green, DWORD& blue )
@@ -1793,7 +1799,7 @@ void Mech3DAppearance::resetPaintScheme (DWORD red, DWORD green, DWORD blue)
 	DWORD cchighlight1 = ((green >> 5) & 7) + (((green >> 13) & 7) << 3) + (((green >> 21) & 7) << 6);
 	DWORD cchighlight2 = ((blue >> 5) & 7) + (((blue >> 13) & 7) << 3) + (((blue >> 21) & 7) << 6);
 	DWORD paintInstance = (ccbase << 18) + (cchighlight1 << 9) + (cchighlight2);
-	
+
 	if (fileExists(textureName))
 	{
 		DWORD textureInstanceAlreadyExists = mcTextureManager->textureInstanceExists(textureName,gos_Texture_Solid,gosHint_DisableMipmap | gosHint_DontShrink,paintInstance);
@@ -1823,9 +1829,11 @@ void Mech3DAppearance::resetPaintScheme (DWORD red, DWORD green, DWORD blue)
 			applied. */
 
 			//Still need to store psRed/psGreen/psBlue!!!!
-			psRed = red;
-			psGreen = green;
-			psBlue = blue;
+			// Must go through storePaintScheme: assigning raw here skipped the
+			// BGR conversion that getPaintScheme always undoes, so the next
+			// get/reset round-trip (every LOD change) swapped R and B and
+			// selected a different paintInstance -- the team-colour flip.
+			storePaintScheme(red, green, blue);
 			return;
 		}
 	}

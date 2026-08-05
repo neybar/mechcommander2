@@ -15,6 +15,18 @@
 #   gputrace    Xcode Metal frame capture (needs full Xcode.app to open)
 #   log         just collect stdout (pair with MC2_VK_DEBUG / MC2_VK_TRACEPX=…)
 #
+# --play: hand the session to a HUMAN. Skips MC2_AUTOQUIT_SECS and the harness's
+# force-kill, so the game runs until the player quits it; capture defaults to
+# log. Use when a bug needs camera work no dev hook can drive (e.g. the task-4
+# paint flip needs LOD transitions, i.e. someone panning). Without this the
+# harness kills the game ~30s in and a play session is impossible.
+#
+# NOTE ON HOST MISSION: the default mc2_02 is deliberate. The save you pass
+# carries its own mission; the host is just a shell to boot into. mc2_03's
+# opening script latches "movie mode" (letterbox, no GUI) and inMovieMode is not
+# serialized, so a save loaded during it is stuck that way — don't set --mission
+# to the save's real mission just because that's where the campaign is.
+#
 # Evidence is written under an out dir (default docs/bugs/<date>-vkprobe/, which
 # is gitignored — retail-derived pixels never get committed). Only the caller's
 # .md writeups are tracked.
@@ -44,8 +56,10 @@ AT=40                      # secs after launch to grab the screenshot / gputrace
 QUIT=""                    # MC2_AUTOQUIT_SECS; default = AT + 12
 OUT=""                     # evidence dir; default docs/bugs/<date>-vkprobe
 TAG="probe"                # basename stem for artifacts
+PLAY=0                     # 1 = human-driven session: no autoquit, no force-kill
 
-usage() { sed -n '2,40p' "$0"; exit "${1:-0}"; }
+# Print just the comment header (ends at the `set -euo` line), not the code.
+usage() { sed -n '2,45p' "$0"; exit "${1:-0}"; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -59,6 +73,7 @@ while [ $# -gt 0 ]; do
     --quit)      QUIT="$2"; shift 2;;
     --out)       OUT="$2"; shift 2;;
     --tag)       TAG="$2"; shift 2;;
+    --play)      PLAY=1; shift;;
     -h|--help)   usage 0;;
     *) echo "unknown arg: $1" >&2; usage 1;;
   esac
@@ -67,6 +82,13 @@ done
 [ -x "$BIN" ] || { echo "vkprobe: binary not found/executable: $BIN" >&2; exit 1; }
 [ -d "$GAMEDIR" ] || { echo "vkprobe: game dir not found: $GAMEDIR" >&2; exit 1; }
 [ -n "$QUIT" ] || QUIT=$(( AT + 12 ))
+# A human-driven run has no fixed length, so timed capture modes make no sense.
+# Both screenshot and gputrace fire at a fixed AT; neither means anything when a
+# person is driving, so demote both.
+if [ "$PLAY" = 1 ] && [ "$CAPTURE" != "log" ]; then
+  echo "vkprobe: --play: '$CAPTURE' is a timed capture; using 'log' instead" >&2
+  CAPTURE="log"
+fi
 [ -n "$OUT" ] || OUT="$(cd "$(dirname "$0")/../.." && pwd)/docs/bugs/$(date +%Y-%m-%d)-vkprobe"
 mkdir -p "$OUT"
 # Make OUT absolute: the game runs from GAMEDIR, so a relative --out would make
@@ -79,7 +101,15 @@ LOG="$OUT/${TAG}_${STAMP}.log"
 # ---- env for the child ------------------------------------------------------
 # Pass through any MC2_* the caller already exported (MC2_VK_DEBUG, TRACEPX,
 # RIALOG, FOG_DEBUG, …); we only add the harness-controlled ones.
-export MC2_AUTOQUIT_SECS="$QUIT"
+if [ "$PLAY" = 0 ]; then
+  export MC2_AUTOQUIT_SECS="$QUIT"
+else
+  # Not just "don't set it" -- the script deliberately passes through exported
+  # MC2_* vars, so an MC2_AUTOQUIT_SECS left over from an earlier validation
+  # sweep would kill the session mid-pan and make --play look broken. This is
+  # the stale-export trap CLAUDE.md warns about; --play must win.
+  unset MC2_AUTOQUIT_SECS
+fi
 if [ -n "$SAVE" ]; then
   export MC2_LOAD_SAVE="$SAVE"
   export MC2_LOAD_SAVE_SECS="$LOAD_SECS"
@@ -92,7 +122,11 @@ fi
 
 echo "vkprobe: bin=$BIN"
 echo "vkprobe: mission=$MISSION save='${SAVE:-<none>}' load_secs=$LOAD_SECS"
-echo "vkprobe: capture=$CAPTURE at=${AT}s quit=${QUIT}s"
+if [ "$PLAY" = 1 ]; then
+  echo "vkprobe: capture=$CAPTURE  PLAY MODE — no autoquit; runs until you quit the game"
+else
+  echo "vkprobe: capture=$CAPTURE at=${AT}s quit=${QUIT}s"
+fi
 echo "vkprobe: out=$OUT  log=$LOG"
 
 # ---- launch -----------------------------------------------------------------
@@ -125,17 +159,28 @@ case "$CAPTURE" in
 esac
 
 # ---- wait for clean quit ----------------------------------------------------
-# AUTOQUIT drives the normal quit path; give it a grace window, then force.
-for _ in $(seq 1 30); do
-  kill -0 "$PID" 2>/dev/null || break
-  sleep 1
-done
-if kill -0 "$PID" 2>/dev/null; then
-  echo "vkprobe: still running past AUTOQUIT+grace; terminating"
-  kill "$PID" 2>/dev/null || true
+if [ "$PLAY" = 1 ]; then
+  # Human at the controls: never impose a deadline. Wait for them to quit.
+  # KEEP the EXIT trap here -- unlike the non-play branch (where the child is
+  # already dead by this point), this wait can last minutes, and if the wrapper
+  # is signalled (SIGTERM from a harness, terminal closed) without the trap we
+  # orphan a fullscreen game with nothing owning it. cleanup() is idempotent.
+  echo "vkprobe: waiting for you to quit the game (signalling this script kills it too)"
+  wait "$PID" 2>/dev/null || true
+  trap - EXIT
+else
+  # AUTOQUIT drives the normal quit path; give it a grace window, then force.
+  for _ in $(seq 1 30); do
+    kill -0 "$PID" 2>/dev/null || break
+    sleep 1
+  done
+  if kill -0 "$PID" 2>/dev/null; then
+    echo "vkprobe: still running past AUTOQUIT+grace; terminating"
+    kill "$PID" 2>/dev/null || true
+  fi
+  trap - EXIT
+  wait "$PID" 2>/dev/null || true
 fi
-trap - EXIT
-wait "$PID" 2>/dev/null || true
 
 echo "vkprobe: done. artifacts in $OUT"
 [ "$CAPTURE" = "log" ] && echo "vkprobe: --- tail of log ---" && tail -30 "$LOG"
