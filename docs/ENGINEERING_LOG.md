@@ -6,6 +6,144 @@ Newest entries at the top. Practice borrowed from the
 
 ---
 
+## 2026-08-05 — Task 3 audio-shutdown SIGSEGV: crash site pinned to `SDL_QuitSubSystem(SDL_INIT_AUDIO)`, but it will no longer reproduce (STILL OPEN)
+
+**Status: still open. No fix shipped**, because nothing could be verified — the
+crash did not happen once in **85 launches** across five configurations, against
+the 2026-07-18 measurement of ~27% (4/15). At that rate, 85 clean runs is a
+~10^-11 outcome, so this is not bad luck; the trigger is gone from every
+configuration reachable today.
+
+**Supersedes the 2026-07-18 entry on one point.** That entry named
+`SoundEngine::destroy()` and offered "a teardown race between the main thread
+freeing sound state and SDL's audio callback thread" as the prime suspect,
+reasoning from the `Mix_HaltChannel`-then-free ordering. The suspect call is now
+known, and it is none of the calls that ordering is about.
+
+### 1. The crash is inside `SDL_QuitSubSystem(SDL_INIT_AUDIO)` — `gameos_sound.cpp:270`
+
+Not the `Mix_HaltChannel` loop, not the `gosAudio::destroyAudio` frees, not
+`SDL_CloseAudioDevice`, not `Mix_CloseAudio`, not `Mix_Quit`.
+
+The July crash report named `gameos_sound.cpp:272`, which is the *following*
+source line and reads `is_initialized_ = false;` — a mismatch that is exactly why
+the original entry could only guess. **Caller frames in a macOS crash report hold
+return addresses**, so a call whose next instruction begins a new source line
+symbolizes to that later line. Rebuilt the July-18 tree (`c199e46`) in a scratch
+worktree and disassembled `SoundEngine::destroy`:
+
+```
+0x100244a04  bl SDL_CloseAudioDevice  -> gameos_sound.cpp:265
+0x100244a0c  bl Mix_CloseAudio        -> gameos_sound.cpp:268
+0x100244a10  bl Mix_Quit              -> gameos_sound.cpp:269
+0x100244a18  bl SDL_QuitSubSystem     -> gameos_sound.cpp:270
+0x100244a1c  (next instruction)       -> gameos_sound.cpp:272   <-- the report's line
+```
+
+Every other candidate is excluded by its own return address landing on a
+different line. The six `libSDL3` frames above it in the July stack are the
+inside of SDL3's `SDL_QuitAudio`.
+
+**Reusable technique:** when a crash report's line looks like dead code (an
+assignment, a closing brace), disassemble that function and map the return
+addresses — the real call is usually the one just above.
+
+### 2. It no longer reproduces, and not because of anything we changed
+
+| Configuration | Runs | Crashes |
+|---|---|---|
+| current `mc2-vk`, windowed 1024x768 | 20 | 0 |
+| current `mc2-vk`, windowed, under 8 CPU spinners | 10 | 0 |
+| current `mc2` (GL), windowed | 10 | 0 |
+| **July-18 binary** (`c199e46`), windowed | 20 | 0 |
+| current `mc2-vk`, **fullscreen**, cycling 2048x1080 / 800x600 / 3008x1692 | 21 | 0 |
+
+All `-mission mc2_01` with `MC2_AUTOQUIT_SECS=18` — the same clean-quit path the
+July matrix drove. (Four further runs under `lldb`, also clean, are not in the
+table.)
+
+### 3. Hypotheses tested and refuted
+
+- **"Our changes since July fixed it."** Refuted: the July-18 binary is equally
+  clean *today*, and the audio code is byte-identical regardless — the last
+  commit touching `gameos_sound.cpp` is upstream's `33a4452`, predating both
+  dates.
+- **SDL library drift.** Refuted: sdl2-compat 2.32.70, SDL3 3.4.12 and
+  SDL2_mixer 2.8.2 were all installed 2026-07-06, *before* the crash was
+  measured, and are unchanged since.
+- **A vk bug.** Refuted: GL is clean too. (Check-GL-first paid for itself again.)
+- **A scheduling race that CPU contention would widen.** Not supported: 10 runs
+  under 8 spinners, all clean.
+- **Display-mode switching.** This was the leading hypothesis — the July session
+  was a windowed/fullscreen × resolution matrix, and jalance's monitors carry
+  audio devices (`PA27JCV` over DisplayPort, `Odyssey G70B` over HDMI), so a
+  fullscreen mode switch can make CoreAudio reconfigure underneath SDL3.
+  **Refuted:** 21 fullscreen runs cycling three resolutions, zero crashes.
+- **Audio output device.** Not the variable: jalance confirms the same USB DAC
+  (JDS Labs Atom DAC 2, default output at 44100) was in use in July.
+- **The engine's `UserHeap` is torn down before the sound buffers are freed.**
+  Strong on a code read — `SoundSystem::destroy()` destroys `soundHeap`
+  (`soundsys.cpp:52`, reached from `soundSystem->destroy()` at
+  `mechcmd2.cpp:1904`) long before `gos_DestroyAudio()` frees every sample
+  buffer (`mechcmd2.cpp:2016`). **Refuted:** in this port the gos heaps are
+  inert. `operator new` → `gos_Malloc` → plain `malloc` (`gameos.cpp:175,190`),
+  under a standing FIXME saying per-heap tracking was never implemented. There is
+  no heap to dangle into.
+
+### 4. A standalone mirror of the teardown is also clean
+
+Wrote an asset-free C mirror of `SoundEngine::init`/`destroy`: same
+22050/S16LSB/stereo/1024 spec, same 32 mixer channels, same second queued
+`SDL_OpenAudioDevice` left unpaused for the session, app-owned `Mix_Chunk::abuf`
+buffers freed in the same order, then the exact five-call teardown. 60 process
+launches, zero crashes. So the teardown **sequence in isolation is not
+sufficient** — whatever the trigger is, it needs the game's surrounding state.
+
+### 5. Real defects found by reading — none verified as the cause
+
+Recorded so the next session does not rediscover them. **None of these is "the
+fix."** Shipping one as a fix would repeat the `-DBGR` mistake of promoting a
+symptom-suppressor to root cause.
+
+- **`streamedAudioList_` is never drained by `SoundEngine::destroy()`.** Every
+  `gosStreamedAudio` and its `SDL_AudioStream` outlives
+  `SDL_QuitSubSystem(SDL_INIT_AUDIO)`, which destroys the underlying streams —
+  leak plus dangling handles. Only reachable with a movie playing at quit
+  (`mc2movie.cpp` is the only user), so it cannot explain a `-mission` run.
+- **`is_initialized_` is a dead flag.** Set false in the constructor, set false
+  again in `destroy()`, **never set true anywhere**, and `destroy()` never checks
+  it. So a failed `gos_CreateAudio()` — which `CPrefs::applyPrefs` explicitly
+  treats as "not an error" and continues past (`prefs.cpp:496`) — still runs the
+  full SDL teardown, including `SDL_QuitSubSystem` on a subsystem that may never
+  have come up. **That is the right shape for a crash inside
+  `SDL_QuitSubSystem`**, and it is the first thing to wire up if this is picked
+  up again.
+- **`audio_device` is missing from the constructor's init list**
+  (`gameos_sound.cpp:73` initializes every other member). Harmless today — no
+  path reaches `destroy()` without `init()` assigning it at :211 — but one early
+  return away from a garbage handle reaching `SDL_CloseAudioDevice`.
+- **`gosAudio_DestroyResource` frees the resource only when it is bound to a
+  channel** (`gameos_sound.cpp:534-543`): the `deleteAudio` call sits inside the
+  channel-match loop, so an unbound resource leaks until shutdown.
+
+### 6. Process note — archive crash reports
+
+The July session symbolized a stack but archived neither the `.ips` nor any run
+log, and macOS has since aged the reports out. The only surviving evidence of a
+crash that happened four times was a four-line summary, and recovering one line
+of it (which call?) took a worktree rebuild and a disassembly. **Archive the raw
+`.ips` under `docs/bugs/` next time.**
+
+### 7. What to do with task 3
+
+It cannot be fixed blind: with no reproduction there is no way to tell a fix from
+a coincidence, which is the exact trap CLAUDE.md warns about. Next time it is
+seen **in the wild**, grab `~/Library/Logs/DiagnosticReports/*.ips` immediately
+and note what was connected and what the run was doing — that report is worth
+more than another 85 scripted launches.
+
+---
+
 ## 2026-07-31 — Task 4 finding 3 SOLVED: `-DBGR` was inverting every team colour; the flip was a symptom. Not a vk descriptor collision
 
 **Refutes the 2026-07-20 entry "Downed mech flips team-color skin (blue ↔ red)
@@ -1098,6 +1236,14 @@ before trusting a click coordinate, don't just eyeball the sprite.
 ---
 
 ## 2026-07-18 — vk resolution/fullscreen test matrix: intermittent shutdown SIGSEGV found (OPEN), resolution-mismatch theory ruled out
+
+> **Partly superseded 2026-08-05.** The crash site below is imprecise: the SIGSEGV
+> is inside `SDL_QuitSubSystem(SDL_INIT_AUDIO)` (`gameos_sound.cpp:270`), not the
+> `Mix_HaltChannel`/free ordering this entry reasons about, so the
+> "teardown race with SDL's audio callback thread" suspect is unsupported. The
+> ~27% rate also no longer holds — 85 launches across five configurations produced
+> zero crashes, including on this very binary rebuilt from `c199e46`. See the
+> 2026-08-05 entry. The asset-audit and resolution-mismatch findings here stand.
 
 Task 3 from the credit plan: scripted windowed/fullscreen × resolution
 matrix on `mc2-vk` using `-mission mc2_01` + `MC2_AUTOQUIT_SECS` +

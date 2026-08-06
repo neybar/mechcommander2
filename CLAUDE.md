@@ -52,10 +52,20 @@ unspecified in core Vulkan and the layer only checks it under
 
 Next up, in `docs/CREDIT_PLAN.md` order — **task 4** effects/transparency
 parity sweep (needs user playtesting; Mission 1 fully closed, later missions
-unswept), **task 3's** leftover
-intermittent SIGSEGV in `SoundEngine::destroy()` on shutdown, **task 10**
-clang-tidy warning audit, then **task 11** the vk perf pass. Pick from the plan
-rather than inventing an order.
+unswept), **task 10** clang-tidy warning audit, then **task 11** the vk perf
+pass. Pick from the plan rather than inventing an order.
+
+**Task 3 (shutdown SIGSEGV) is open but blocked — don't spend a session on it.**
+The 2026-08-05 fix pass could not reproduce it: 85 launches across five
+configurations, including the July-18 binary rebuilt from `c199e46`, all clean
+against a measured 27% rate. It did pin the crash site to
+`SDL_QuitSubSystem(SDL_INIT_AUDIO)` (`gameos_sound.cpp:270` — the July report's
+":272" is the *next* line) and refute six hypotheses, the original
+audio-callback-race suspect among them. Scripted launch loops are exhausted;
+the next useful evidence is a crash in the wild, so **if you ever see it, save
+`~/Library/Logs/DiagnosticReports/*.ips` before macOS ages it out.** Optional
+**task 3a** hardens the teardown separately and must not be recorded as closing
+task 3.
 
 GitHub remote is live: github.com/neybar/mechcommander2 (public, `main`
 branch-protected, PR required — see ENGINEERING_LOG).
