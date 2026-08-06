@@ -31,10 +31,49 @@ that discipline is what makes model switches cheap.
    windowed/fullscreen × several resolutions tested. Found a real,
    unrelated bug — intermittent (~27%) SIGSEGV in `SoundEngine::destroy()`
    on clean shutdown, reproducing on every config tested, not
-   resolution-specific. Logged in ENGINEERING_LOG, **still open, needs an
-   OPUS fix pass** (own root-cause hypothesis already written up: audio
-   callback-thread teardown race). Resolution-mismatch-causes-visible-
-   breakage theory investigated and ruled out.
+   resolution-specific. Logged in ENGINEERING_LOG.
+
+   **OPUS fix pass run 2026-08-05: no fix possible — it will not reproduce.
+   Still open, but BLOCKED on a live sighting, not on model time.** 85 launches
+   across five configurations (current vk windowed; vk under CPU load; GL; the
+   **July-18 binary rebuilt from `c199e46`**; and vk fullscreen cycling three
+   resolutions) produced **zero** crashes — a ~10^-11 outcome at the measured
+   27%. Two things were gained and both are in the 2026-08-05 ENGINEERING_LOG
+   entry: the crash site is now **pinned to `SDL_QuitSubSystem(SDL_INIT_AUDIO)`**
+   (`gameos_sound.cpp:270`, proved by disassembling the July binary and mapping
+   return addresses — July's ":272" is the *next* line), and six hypotheses are
+   refuted with evidence, including the original **audio-callback-race** suspect,
+   display-mode switching, the audio output device, SDL library drift, and the
+   plausible-looking `soundHeap`-destroyed-before-the-buffers theory (the gos
+   heaps are inert — `operator new` is plain `malloc`).
+
+   **Do not re-run scripted launch loops on this.** That avenue is exhausted; a
+   sixth clean batch buys nothing. The next useful input is a crash **in the
+   wild** — when it happens, save `~/Library/Logs/DiagnosticReports/*.ips`
+   before macOS ages it out, and note what was connected. Four real teardown
+   defects found by reading (dead `is_initialized_` flag, undrained
+   `streamedAudioList_`, uninitialized `audio_device`, leaky
+   `gosAudio_DestroyResource`) are catalogued in the same entry as **hardening
+   candidates, explicitly not the fix** — see task 3a.
+3a. **Harden the audio teardown (independent of task 3's crash)**: four defects
+    found while reading `gameos_sound.cpp` on 2026-08-05, each real on its own
+    terms and none of them a verified fix for the SIGSEGV — full detail in that
+    day's ENGINEERING_LOG entry, section 5.
+    (a) `is_initialized_` is never set true, and `destroy()` never checks it, so
+    a failed `gos_CreateAudio()` — which `prefs.cpp:496` deliberately tolerates —
+    still runs the whole SDL teardown including `SDL_QuitSubSystem`. Highest
+    value of the four, and the only one whose shape matches the known crash site.
+    (b) `SoundEngine::destroy()` never drains `streamedAudioList_`, so movie
+    `SDL_AudioStream`s outlive the subsystem quit that destroys them.
+    (c) `audio_device` is missing from the constructor's init list.
+    (d) `gosAudio_DestroyResource` frees a resource only when it is bound to a
+    channel, leaking unbound ones until shutdown.
+    **Ship it labelled as hardening; it must not be recorded as closing task 3**,
+    which stays open until a live crash is seen again. Note the risk that argues
+    for care rather than speed: with no reproduction, a change to this exact code
+    path cannot be shown not to have made things worse. Not started. — **SONNET**
+    (small, well-specified, no judgment call left open).
+
 4. **Effects/transparency parity sweep**: user plays later campaign
    missions on vk (free!); for anything off, GL-vs-vk screenshot pairs +
    MC2_VK_DEBUG log land in a bug note. — user + **SONNET** intake;
